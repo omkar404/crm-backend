@@ -6,7 +6,7 @@ const Lead = require("../models/Lead");
 // --------------------------------------------------------------------------
 // REQUIRED FIELDS (backend enforced)
 // --------------------------------------------------------------------------
-const REQUIRED_FIELDS = [
+const ALL_FIELDS    = [
   "name",
   "iecChaNo",
   "landlineNo",
@@ -35,13 +35,26 @@ const REQUIRED_FIELDS = [
   "notes",
 ];
 
+const REQUIRED_FIELDS      = ["name", "mobileNo", "email"];
+
+
 // --------------------------------------------------------------------------
 // Helper: Validate required fields
+
+function cleanEnums(obj) {
+  for (let key in obj) {
+    if (obj[key] === "") {
+      obj[key] = undefined; 
+    }
+  }
+  return obj;
+}
+
 // --------------------------------------------------------------------------
 function validateRequired(body) {
-  for (let f of REQUIRED_FIELDS) {
+  for (let f of REQUIRED_FIELDS ) {
     if (!body[f] || body[f].toString().trim() === "") {
-      return `Field '${f}' is required.`;
+      return `Fieldss '${f}' is required YESS.`;
     }
   }
   return null;
@@ -61,6 +74,9 @@ async function generateId() {
 // --------------------------------------------------------------------------
 exports.createLead = async (req, res) => {
   try {
+
+    req.body = cleanEnums(req.body);
+
     const missing = validateRequired(req.body);
     if (missing) return res.status(400).json({ error: missing });
 
@@ -99,6 +115,8 @@ exports.createLead = async (req, res) => {
 exports.updateLead = async (req, res) => {
   try {
     const { id } = req.params;
+
+    req.body = cleanEnums(req.body);
 
     const existing = await Lead.findById(id);
     if (!existing) return res.status(404).json({ error: "Lead not found." });
@@ -209,7 +227,7 @@ const sampleFilePath = path.join(__dirname, "../static/sample-leads.xlsx");
 
 function generateSample() {
   if (!fs.existsSync(sampleFilePath)) {
-    const ws = XLSX.utils.aoa_to_sheet([REQUIRED_FIELDS]);
+    const ws = XLSX.utils.aoa_to_sheet([ALL_FIELDS]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Sample");
     fs.mkdirSync(path.dirname(sampleFilePath), { recursive: true });
