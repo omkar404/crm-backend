@@ -9,6 +9,7 @@ const {
   deleteLead,
   importLeads,
   downloadSample,
+  getDashboardStats,
 } = require("../controllers/leadController");
 const { login, register } = require("../controllers/authController");
 const auth = require("../middleware/auth");
@@ -20,6 +21,8 @@ const upload = multer({ dest: "uploads/" });
 router.post("/import", upload.single("file"), importLeads);
 router.get("/sample", downloadSample);
 
+
+router.get("/dashboard-stats", auth, getDashboardStats);
 router.post("/create", auth, createLead);
 router.get("/list", auth, listLeads);
 router.patch("/status/:id", auth, updateStatus);

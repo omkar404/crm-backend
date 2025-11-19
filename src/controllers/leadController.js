@@ -6,7 +6,7 @@ const Lead = require("../models/Lead");
 // --------------------------------------------------------------------------
 // REQUIRED FIELDS (backend enforced)
 // --------------------------------------------------------------------------
-const ALL_FIELDS    = [
+const ALL_FIELDS = [
   "name",
   "iecChaNo",
   "landlineNo",
@@ -35,8 +35,7 @@ const ALL_FIELDS    = [
   "notes",
 ];
 
-const REQUIRED_FIELDS      = ["name", "mobileNo", "email"];
-
+const REQUIRED_FIELDS = ["name", "mobileNo", "email"];
 
 // --------------------------------------------------------------------------
 // Helper: Validate required fields
@@ -44,7 +43,7 @@ const REQUIRED_FIELDS      = ["name", "mobileNo", "email"];
 function cleanEnums(obj) {
   for (let key in obj) {
     if (obj[key] === "") {
-      obj[key] = undefined; 
+      obj[key] = undefined;
     }
   }
   return obj;
@@ -52,7 +51,7 @@ function cleanEnums(obj) {
 
 // --------------------------------------------------------------------------
 function validateRequired(body) {
-  for (let f of REQUIRED_FIELDS ) {
+  for (let f of REQUIRED_FIELDS) {
     if (!body[f] || body[f].toString().trim() === "") {
       return `Fieldss '${f}' is required YESS.`;
     }
@@ -69,12 +68,89 @@ async function generateId() {
   return "LEAD-" + String(number).padStart(4, "0");
 }
 
+exports.getDashboardStats = async (req, res) => {
+  try {
+    const now = new Date();
+    const startOfDay = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate()
+    );
+    const startOfWeek = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate() - now.getDay()
+    );
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const startOfYear = new Date(now.getFullYear(), 0, 1);
+
+    // Basic Counts
+    const today = await Lead.countDocuments({
+      createdAt: { $gte: startOfDay },
+      isDeleted: false,
+    });
+
+    const week = await Lead.countDocuments({
+      createdAt: { $gte: startOfWeek },
+      isDeleted: false,
+    });
+
+    const month = await Lead.countDocuments({
+      createdAt: { $gte: startOfMonth },
+      isDeleted: false,
+    });
+
+    const year = await Lead.countDocuments({
+      createdAt: { $gte: startOfYear },
+      isDeleted: false,
+    });
+
+    const total = await Lead.countDocuments({ isDeleted: false });
+
+    // Count by leadStatus
+    const byStatus = await Lead.aggregate([
+      { $match: { isDeleted: false } },
+      { $group: { _id: "$leadStatus", count: { $sum: 1 } } },
+    ]);
+
+    // Daily trend for chart (last 30 days)
+    const last30days = await Lead.aggregate([
+      {
+        $match: {
+          isDeleted: false,
+          createdAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
+        },
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]);
+
+    res.json({
+      success: true,
+      today,
+      week,
+      month,
+      year,
+      total,
+      byStatus,
+      last30days,
+    });
+  } catch (err) {
+    console.error("DASHBOARD ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
 // --------------------------------------------------------------------------
 // CREATE LEAD
 // --------------------------------------------------------------------------
 exports.createLead = async (req, res) => {
   try {
-
     req.body = cleanEnums(req.body);
 
     const missing = validateRequired(req.body);
@@ -141,7 +217,11 @@ exports.updateLead = async (req, res) => {
       runValidators: true,
     });
 
-    res.json({ success: true, message: "Lead updated successfully!", lead: updated });
+    res.json({
+      success: true,
+      message: "Lead updated successfully!",
+      lead: updated,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -158,8 +238,7 @@ exports.deleteLead = async (req, res) => {
       { new: true }
     );
 
-    if (!deleted)
-      return res.status(404).json({ error: "Lead not found" });
+    if (!deleted) return res.status(404).json({ error: "Lead not found" });
 
     res.json({ message: "Lead deleted successfully", lead: deleted });
   } catch (err) {
@@ -170,24 +249,50 @@ exports.deleteLead = async (req, res) => {
 // --------------------------------------------------------------------------
 // LIST LEADS WITH PAGINATION + SEARCH
 // --------------------------------------------------------------------------
+// --------------------------------------------------------------------------
+// LIST LEADS (pagination + search + full filtering)
+// --------------------------------------------------------------------------
 exports.listLeads = async (req, res) => {
   try {
-    const { page = 1, limit = 10, search = "" } = req.query;
+    const {
+      page = 1,
+      limit = 10,
+      search = "",
+      leadStatus,
+      industry,
+      leadType,
+      leadSource,
+      AEOStatus,
+      RCMCPanel,
+    } = req.query;
 
-    const query = {
-      isDeleted: false,
-      $or: [
+    const skip = (page - 1) * limit;
+
+    // Construct dynamic filter
+    const filter = { isDeleted: false };
+
+    if (search) {
+      filter.$or = [
         { name: { $regex: search, $options: "i" } },
         { email: { $regex: search, $options: "i" } },
         { mobileNo: { $regex: search, $options: "i" } },
         { idNo: { $regex: search, $options: "i" } },
-      ],
-    };
+      ];
+    }
 
-    const total = await Lead.countDocuments(query);
-    const leads = await Lead.find(query)
+    // Extra filters
+    if (leadStatus) filter.leadStatus = leadStatus;
+    if (industry) filter.industry = industry;
+    if (leadType) filter.leadType = leadType;
+    if (leadSource) filter.leadSource = leadSource;
+    if (AEOStatus) filter.AEOStatus = AEOStatus;
+    if (RCMCPanel) filter.RCMCPanel = RCMCPanel;
+
+    // Fetch data
+    const total = await Lead.countDocuments(filter);
+    const leads = await Lead.find(filter)
       .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
+      .skip(skip)
       .limit(Number(limit));
 
     res.json({
@@ -199,6 +304,7 @@ exports.listLeads = async (req, res) => {
       leads,
     });
   } catch (err) {
+    console.error("LIST ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 };
@@ -245,10 +351,9 @@ exports.downloadSample = (req, res) => {
     "Content-Disposition",
     "attachment; filename=sample-leads.xlsx"
   );
-  
+
   res.download(sampleFilePath);
 };
-
 
 // --------------------------------------------------------------------------
 // IMPORT LEADS (FINAL, FULLY FIXED VERSION)
@@ -267,7 +372,9 @@ exports.importLeads = async (req, res) => {
     const sheet = workbook.Sheets[sheetName];
 
     if (!sheet) {
-      return res.status(400).json({ error: "Invalid file format. No sheet found." });
+      return res
+        .status(400)
+        .json({ error: "Invalid file format. No sheet found." });
     }
 
     const jsonData = XLSX.utils.sheet_to_json(sheet);
@@ -278,8 +385,8 @@ exports.importLeads = async (req, res) => {
 
     // Fetch existing emails and mobiles
     const existingLeads = await Lead.find({}, { email: 1, mobileNo: 1 });
-    const existingEmails = new Set(existingLeads.map(l => l.email));
-    const existingMobiles = new Set(existingLeads.map(l => l.mobileNo));
+    const existingEmails = new Set(existingLeads.map((l) => l.email));
+    const existingMobiles = new Set(existingLeads.map((l) => l.mobileNo));
 
     // Sequential ID
     let currentCount = await Lead.countDocuments();
@@ -288,7 +395,10 @@ exports.importLeads = async (req, res) => {
     const uniqueLeads = [];
 
     jsonData.forEach((lead) => {
-      if (existingEmails.has(lead.email) || existingMobiles.has(lead.mobileNo)) {
+      if (
+        existingEmails.has(lead.email) ||
+        existingMobiles.has(lead.mobileNo)
+      ) {
         duplicates++;
       } else {
         currentCount++;
@@ -312,10 +422,8 @@ exports.importLeads = async (req, res) => {
       imported: uniqueLeads.length,
       skipped_duplicates: duplicates,
     });
-
   } catch (err) {
     console.error("IMPORT ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 };
-
