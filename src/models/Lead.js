@@ -66,6 +66,7 @@ const leadSchema = new mongoose.Schema(
       enum: [
         "RCMC Panel",
         "CHA Panel",
+        "MCA Panel",
         "Website",
         "In Person",
         "In Reference",
