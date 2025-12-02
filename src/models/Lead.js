@@ -84,6 +84,8 @@ const leadSchema = new mongoose.Schema(
       enum: [
         "Not Contacted",
         "Email Sent",
+        "Visit Scheduled",
+        "Email id incorrect",
         "Contact on phone",
         "In Contact",
         "Interested",
