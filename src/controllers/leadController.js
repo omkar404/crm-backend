@@ -153,19 +153,30 @@ exports.createLead = async (req, res) => {
   try {
     req.body = cleanEnums(req.body);
 
-    const missing = validateRequired(req.body);
-    if (missing) return res.status(400).json({ error: missing });
+    const { name, email, mobileNo } = req.body;
 
-    const { email, mobileNo, name } = req.body;
+    // 🔴 Only mandatory field
+    if (!name || !name.trim()) {
+      return res.status(400).json({
+        error: "Name is required.",
+      });
+    }
 
-    const duplicate = await Lead.findOne({
-      $or: [{ email }, { mobileNo }, { name }],
-    });
+    // Duplicate check ONLY if email or mobile exists
+    if (email || mobileNo) {
+      const duplicate = await Lead.findOne({
+        $or: [
+          email ? { email } : undefined,
+          mobileNo ? { mobileNo } : undefined,
+        ].filter(Boolean),
+      });
 
-    if (duplicate)
-      return res
-        .status(400)
-        .json({ error: "Lead with same name/email/mobile exists." });
+      if (duplicate) {
+        return res.status(400).json({
+          error: "Lead with same email or mobile number already exists.",
+        });
+      }
+    }
 
     const idNo = await generateId();
 
@@ -191,26 +202,39 @@ exports.createLead = async (req, res) => {
 exports.updateLead = async (req, res) => {
   try {
     const { id } = req.params;
-
     req.body = cleanEnums(req.body);
 
     const existing = await Lead.findById(id);
-    if (!existing) return res.status(404).json({ error: "Lead not found." });
+    if (!existing) {
+      return res.status(404).json({ error: "Lead not found." });
+    }
 
-    const missing = validateRequired(req.body);
-    if (missing) return res.status(400).json({ error: missing });
+    const { name, email, mobileNo } = req.body;
 
-    const { email, mobileNo, name } = req.body;
+    // 🔴 Name still mandatory on update
+    if (!name || !name.trim()) {
+      return res.status(400).json({
+        error: "Name is required.",
+      });
+    }
 
-    const duplicate = await Lead.findOne({
-      _id: { $ne: id },
-      $or: [{ email }, { mobileNo }, { name }],
-    });
+    // Duplicate check ONLY if email or mobile exists
+    if (email || mobileNo) {
+      const duplicate = await Lead.findOne({
+        _id: { $ne: id },
+        $or: [
+          email ? { email } : undefined,
+          mobileNo ? { mobileNo } : undefined,
+        ].filter(Boolean),
+      });
 
-    if (duplicate)
-      return res
-        .status(400)
-        .json({ error: "Another lead exists with same name/email/mobile." });
+      if (duplicate) {
+        return res.status(400).json({
+          error:
+            "Another lead already exists with same email or mobile number.",
+        });
+      }
+    }
 
     const updated = await Lead.findByIdAndUpdate(id, req.body, {
       new: true,
@@ -365,62 +389,121 @@ exports.importLeads = async (req, res) => {
     }
 
     const XLSX = require("xlsx");
-    const workbook = XLSX.readFile(req.file.path);
+    const fs = require("fs");
 
-    // ✅ DO NOT HARDCODE SHEET NAME
-    const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
+    const workbook = XLSX.readFile(req.file.path);
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
 
     if (!sheet) {
-      return res
-        .status(400)
-        .json({ error: "Invalid file format. No sheet found." });
+      return res.status(400).json({ error: "No sheet found in file" });
     }
 
-    const jsonData = XLSX.utils.sheet_to_json(sheet);
+    const rawData = XLSX.utils.sheet_to_json(sheet);
 
-    if (!jsonData.length) {
-      return res.status(400).json({ error: "Uploaded file is empty" });
+    if (!rawData.length) {
+      return res.status(400).json({ error: "Excel file is empty" });
     }
 
-    // Fetch existing emails and mobiles
-    const existingLeads = await Lead.find({}, { email: 1, mobileNo: 1 });
+    // Normalize
+    const normalizeRow = (row) => ({
+      name: (row["Company Name"] || row["Name"] || row["name"] || "")
+        .toString()
+        .trim()
+        .toUpperCase(),
+      email: (row["EMAIL"] || row["Email"] || row["email"] || "")
+        .toString()
+        .trim()
+        .toLowerCase(),
+
+      mobileNo: (
+        row["MOBILE"] ||
+        row["Mobile"] ||
+        row["Mobile No"] ||
+        row["Phone"] ||
+        row["mobileNo"] ||
+        ""
+      )
+        .toString()
+        .replace(/\D/g, ""),
+
+      address: row["ADDRESS"] || row["Address"] || row["address"] || "",
+      pan: row["PAN"] || "",
+      iec: row["IEC"] || "",
+      _raw: row,
+    });
+
+    const data = rawData.map(normalizeRow);
+
+    // Fetch existing DB data
+    const existingLeads = await Lead.find(
+      {},
+      { email: 1, mobileNo: 1, name: 1 }
+    );
+    const existingNames = new Set(existingLeads.map((l) => l.name));
     const existingEmails = new Set(existingLeads.map((l) => l.email));
     const existingMobiles = new Set(existingLeads.map((l) => l.mobileNo));
 
-    // Sequential ID
     let currentCount = await Lead.countDocuments();
 
-    let duplicates = 0;
     const uniqueLeads = [];
+    const skippedRows = [];
 
-    jsonData.forEach((lead) => {
-      if (
-        existingEmails.has(lead.email) ||
-        existingMobiles.has(lead.mobileNo)
-      ) {
-        duplicates++;
-      } else {
-        currentCount++;
+    data.forEach((lead, index) => {
+      const reasons = [];
 
-        uniqueLeads.push({
-          ...lead,
-          idNo: "LEAD-" + String(currentCount).padStart(4, "0"),
-          idDate: new Date(),
-        });
+      if (!lead.name) {
+        reasons.push("Name is missing");
       }
+
+      if (lead.name && existingNames.has(lead.name)) {
+        reasons.push("Name already exists");
+      }
+
+      // 2️⃣ Duplicate checks
+      if (lead.email && existingEmails.has(lead.email)) {
+        reasons.push("Email already exists");
+      }
+
+      if (lead.mobileNo && existingMobiles.has(lead.mobileNo)) {
+        reasons.push("Mobile already exists");
+      }
+
+      // ❌ If any reason exists → skip
+      if (reasons.length) {
+        skippedRows.push({
+          rowNumber: index + 2, // Excel row (header = row 1)
+          reasons,
+          data: lead._raw,
+        });
+        return;
+      }
+
+      // ✅ Unique lead
+      currentCount++;
+
+      uniqueLeads.push({
+        ...lead,
+        isDeleted: false,
+        idNo: "LEAD-" + String(currentCount).padStart(4, "0"),
+        idDate: new Date(),
+      });
+
+      existingNames.add(lead.name);
+      existingEmails.add(lead.email);
+      existingMobiles.add(lead.mobileNo);
     });
 
     if (uniqueLeads.length) {
       await Lead.insertMany(uniqueLeads);
     }
 
-    fs.unlinkSync(req.file.path);
+    fs.unlink(req.file.path, () => {});
 
     res.json({
       success: true,
       imported: uniqueLeads.length,
-      skipped_duplicates: duplicates,
+      skipped: skippedRows.length,
+      skippedDetails: skippedRows,
     });
   } catch (err) {
     console.error("IMPORT ERROR:", err);
