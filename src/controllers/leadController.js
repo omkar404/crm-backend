@@ -382,12 +382,142 @@ exports.downloadSample = (req, res) => {
 // --------------------------------------------------------------------------
 // IMPORT LEADS (FINAL, FULLY FIXED VERSION)
 // --------------------------------------------------------------------------
+// exports.importLeads = async (req, res) => {
+//   try {
+//     if (!req.file) {
+//       return res.status(400).json({ error: "No file uploaded" });
+//     }
+
+//     const XLSX = require("xlsx");
+//     const fs = require("fs");
+
+//     const workbook = XLSX.readFile(req.file.path);
+//     const sheet = workbook.Sheets[workbook.SheetNames[0]];
+
+//     if (!sheet) {
+//       return res.status(400).json({ error: "No sheet found in file" });
+//     }
+
+//     const rawData = XLSX.utils.sheet_to_json(sheet);
+
+//     if (!rawData.length) {
+//       return res.status(400).json({ error: "Excel file is empty" });
+//     }
+
+//     // Normalize
+//     const normalizeRow = (row) => ({
+//       name: (row["Company Name"] || row["Name"] || row["name"] || "")
+//         .toString()
+//         .trim()
+//         .toUpperCase(),
+//       email: (row["EMAIL"] || row["Email"] || row["email"] || "")
+//         .toString()
+//         .trim()
+//         .toLowerCase(),
+
+//       mobileNo: (
+//         row["MOBILE"] ||
+//         row["Mobile"] ||
+//         row["Mobile No"] ||
+//         row["Phone"] ||
+//         row["mobileNo"] ||
+//         ""
+//       )
+//         .toString()
+//         .replace(/\D/g, ""),
+
+//       address: row["ADDRESS"] || row["Address"] || row["address"] || "",
+//       pan: row["PAN"] || "",
+//       iec: row["IEC"] || "",
+//       _raw: row,
+//     });
+
+//     const data = rawData.map(normalizeRow);
+
+//     // Fetch existing DB data
+//     const existingLeads = await Lead.find(
+//       {},
+//       { email: 1, mobileNo: 1, name: 1 }
+//     );
+//     const existingNames = new Set(existingLeads.map((l) => l.name));
+//     const existingEmails = new Set(existingLeads.map((l) => l.email));
+//     const existingMobiles = new Set(existingLeads.map((l) => l.mobileNo));
+
+//     let currentCount = await Lead.countDocuments();
+
+//     const uniqueLeads = [];
+//     const skippedRows = [];
+
+//     data.forEach((lead, index) => {
+//       const reasons = [];
+
+//       if (!lead.name) {
+//         reasons.push("Name is missing");
+//       }
+
+//       if (lead.name && existingNames.has(lead.name)) {
+//         reasons.push("Name already exists");
+//       }
+
+//       // 2️⃣ Duplicate checks
+//       if (lead.email && existingEmails.has(lead.email)) {
+//         reasons.push("Email already exists");
+//       }
+
+//       if (lead.mobileNo && existingMobiles.has(lead.mobileNo)) {
+//         reasons.push("Mobile already exists");
+//       }
+
+//       // ❌ If any reason exists → skip
+//       if (reasons.length) {
+//         skippedRows.push({
+//           rowNumber: index + 2, // Excel row (header = row 1)
+//           reasons,
+//           data: lead._raw,
+//         });
+//         return;
+//       }
+
+//       // ✅ Unique lead
+//       currentCount++;
+
+//       uniqueLeads.push({
+//         ...lead,
+//         isDeleted: false,
+//         idNo: "LEAD-" + String(currentCount).padStart(4, "0"),
+//         idDate: new Date(),
+//       });
+
+//       existingNames.add(lead.name);
+//       existingEmails.add(lead.email);
+//       existingMobiles.add(lead.mobileNo);
+//     });
+
+//     if (uniqueLeads.length) {
+//       await Lead.insertMany(uniqueLeads);
+//     }
+
+//     fs.unlink(req.file.path, () => {});
+
+//     res.json({
+//       success: true,
+//       imported: uniqueLeads.length,
+//       skipped: skippedRows.length,
+//       skippedDetails: skippedRows,
+//     });
+//   } catch (err) {
+//     console.error("IMPORT ERROR:", err);
+//     res.status(500).json({ error: err.message });
+//   }
+// };
+
 exports.importLeads = async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
+    const { v4: uuidv4 } = require("uuid");
     const XLSX = require("xlsx");
     const fs = require("fs");
 
@@ -398,52 +528,69 @@ exports.importLeads = async (req, res) => {
       return res.status(400).json({ error: "No sheet found in file" });
     }
 
-    const rawData = XLSX.utils.sheet_to_json(sheet);
+    // const rawData = XLSX.utils.sheet_to_json(sheet);
+    const rawData = XLSX.utils.sheet_to_json(sheet, {
+      defval: "", // IMPORTANT
+    });
 
     if (!rawData.length) {
       return res.status(400).json({ error: "Excel file is empty" });
     }
 
+    const emptyToUndefined = (v) =>
+      v === "" || v === null || v === undefined ? undefined : v;
+
     // Normalize
     const normalizeRow = (row) => ({
-      name: (row["Company Name"] || row["Name"] || row["name"] || "")
-        .toString()
-        .trim()
-        .toUpperCase(),
-      email: (row["EMAIL"] || row["Email"] || row["email"] || "")
-        .toString()
-        .trim()
-        .toLowerCase(),
+      name: row.name ? row.name.toString().trim().toUpperCase() : "",
 
-      mobileNo: (
-        row["MOBILE"] ||
-        row["Mobile"] ||
-        row["Mobile No"] ||
-        row["Phone"] ||
-        row["mobileNo"] ||
-        ""
-      )
-        .toString()
-        .replace(/\D/g, ""),
+      iecChaNo: row.iecChaNo || "",
+      landlineNo: row.landlineNo || "",
 
-      address: row["ADDRESS"] || row["Address"] || row["address"] || "",
-      pan: row["PAN"] || "",
-      iec: row["IEC"] || "",
-      _raw: row,
+      mobileNo: row.mobileNo ? row.mobileNo.toString().replace(/\D/g, "") : "",
+
+      email: row.email ? row.email.toString().trim().toLowerCase() : "",
+
+      website: row.website || "",
+      address: row.address || "",
+      city: row.city || "",
+      state: row.state || "",
+      pinCode: row.pinCode || "",
+
+      contactPerson: row.contactPerson || "",
+      designation: row.designation || "",
+
+      employees: row.employees ? Number(row.employees) : undefined,
+
+      // ✅ ENUM SAFE FIELDS
+      turnover: emptyToUndefined(row.turnover),
+      startupCategory: emptyToUndefined(row.startupCategory),
+      AEOStatus: emptyToUndefined(row.AEOStatus),
+
+      leadType: emptyToUndefined(row.leadType),
+      priorityRating: emptyToUndefined(row.priorityRating),
+      leadSource: emptyToUndefined(row.leadSource),
+      leadStatus: emptyToUndefined(row.leadStatus),
+
+      RCMCPanel: row.RCMCPanel || "",
+      RCMCType: row.RCMCType || "",
+
+      industry: row.industry || "",
+      industryBrief: row.industryBrief || "",
+      description: row.description || "",
+      notes: row.notes || "",
     });
 
     const data = rawData.map(normalizeRow);
 
     // Fetch existing DB data
     const existingLeads = await Lead.find(
-      {},
+      { isDeleted: false },
       { email: 1, mobileNo: 1, name: 1 }
     );
     const existingNames = new Set(existingLeads.map((l) => l.name));
     const existingEmails = new Set(existingLeads.map((l) => l.email));
     const existingMobiles = new Set(existingLeads.map((l) => l.mobileNo));
-
-    let currentCount = await Lead.countDocuments();
 
     const uniqueLeads = [];
     const skippedRows = [];
@@ -471,20 +618,30 @@ exports.importLeads = async (req, res) => {
       // ❌ If any reason exists → skip
       if (reasons.length) {
         skippedRows.push({
-          rowNumber: index + 2, // Excel row (header = row 1)
+          rowNumber: index + 2,
+          name: lead.name,
+          email: lead.email,
+          mobileNo: lead.mobileNo,
           reasons,
-          data: lead._raw,
         });
+
         return;
       }
 
       // ✅ Unique lead
-      currentCount++;
+      // currentCount++;
+
+      // uniqueLeads.push({
+      //   ...lead,
+      //   isDeleted: false,
+      //   idNo: "LEAD-" + String(currentCount).padStart(4, "0"),
+      //   idDate: new Date(),
+      // });
 
       uniqueLeads.push({
         ...lead,
         isDeleted: false,
-        idNo: "LEAD-" + String(currentCount).padStart(4, "0"),
+        idNo: "LEAD-" + uuidv4(), // ✅ ALWAYS UNIQUE
         idDate: new Date(),
       });
 
@@ -501,9 +658,16 @@ exports.importLeads = async (req, res) => {
 
     res.json({
       success: true,
+      totalRows: rawData.length,
       imported: uniqueLeads.length,
       skipped: skippedRows.length,
-      skippedDetails: skippedRows,
+      skippedDetails: skippedRows.map((r) => ({
+        rowNumber: r.rowNumber,
+        name: r.name,
+        email: r.email,
+        mobileNo: r.mobileNo,
+        reasons: r.reasons, // array
+      })),
     });
   } catch (err) {
     console.error("IMPORT ERROR:", err);
