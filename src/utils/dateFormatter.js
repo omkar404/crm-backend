@@ -1,4 +1,4 @@
-export const formatISTDate = (date) => {
+const formatISTDate = (date) => {
   const istDate = new Date(date).toLocaleString("en-IN", {
     timeZone: "Asia/Kolkata",
     hour: "numeric",
@@ -13,3 +13,5 @@ export const formatISTDate = (date) => {
   const [time, rest] = istDate.split(", ");
   return `${time}\n${rest} (IST)`;
 };
+
+module.exports = { formatISTDate };

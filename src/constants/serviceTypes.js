@@ -1,4 +1,4 @@
-export const DEFAULT_SERVICE_TYPES = {
+const DEFAULT_SERVICE_TYPES = {
   "IEC Services": ["New Registration", "Profile Updation", "Annual Updation"],
   "Advance Authorization": ["New Application", "Redemption", "Invalidation"],
   "EPCG License": ["New License", "Redemption", "Amendment"],
@@ -8,4 +8,6 @@ export const DEFAULT_SERVICE_TYPES = {
   "DGFT Appeal": ["First Appeal", "Second Appeal"],
   "Import License": ["Restricted Item", "Steel Import"]
 };
+
+module.exports = { DEFAULT_SERVICE_TYPES };
 

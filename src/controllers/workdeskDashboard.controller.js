@@ -1,6 +1,6 @@
-import WorkdeskTask from "../models/workdeskTaskFilter.model.js";
+const WorkdeskTask = require("../models/workdeskTaskFilter.model.js");
 
-export const getWorkdeskDashboardAnalytics = async (req, res) => {
+const getWorkdeskDashboardAnalytics = async (req, res) => {
     try {
         const user = req.user;
         const now = new Date();
@@ -112,3 +112,5 @@ export const getWorkdeskDashboardAnalytics = async (req, res) => {
         });
     }
 };
+
+module.exports = { getWorkdeskDashboardAnalytics };

@@ -1,44 +1,107 @@
-import mongoose from "mongoose";
+const mongoose = require("mongoose");
 
 const dscLogSchema = new mongoose.Schema({
-  status: String,
+  status: {
+    type: String,
+    enum: ["Inward", "Outward"]
+  },
   note: String,
-  user: String,
-  date: Date
+  user: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User"
+  },
+  date: {
+    type: Date,
+    default: Date.now
+  }
 });
 
 const clientSchema = new mongoose.Schema(
   {
-    clientId: { type: String, unique: true },
-    name: { type: String, required: true },
+    clientId: {
+      type: String,
+      unique: true,
+      required: true
+    },
 
-    source: { type: String, enum: ["Direct", "CHA"], default: "Direct" },
-    chaId: { type: mongoose.Schema.Types.ObjectId, ref: "CHA" },
+    name: {
+      type: String,
+      required: true,
+      trim: true
+    },
+
+    source: {
+      type: String,
+      enum: ["Direct", "CHA"],
+      default: "Direct"
+    },
+
+    chaId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "CHA"
+    },
+
     chaName: String,
 
     contactPerson: String,
-    contactEmail: String,
+
+    contactEmail: {
+      type: String,
+      lowercase: true
+    },
+
     contactMobile: String,
 
     dgftLogin: String,
-    dgftPassword: String,
+    dgftPassword: {
+      type: String,
+      select: false
+    },
+
     icegateLogin: String,
-    icegatePassword: String,
-    
+    icegatePassword: {
+      type: String,
+      select: false
+    },
+
     dscHolder: String,
     dscExpiry: Date,
-    dscLocation: { type: String, default: "Office Safe" },
-    dscStatus: { type: String, default: "Outward" },
-    dscLog: [dscLogSchema],
+
+    dscLocation: {
+      type: String,
+      default: "Office Safe"
+    },
+
+    dscStatus: {
+      type: String,
+      enum: ["Inward", "Outward"],
+      default: "Outward"
+    },
+
+dscLog: {
+  type: [dscLogSchema],
+  default: []
+},
 
     authSignatoryName: String,
-    authSignatoryMobile: String,
-    authSignatoryAadhaar: String,
 
-    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-    updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }
+    authSignatoryMobile: String,
+
+    authSignatoryAadhaar: {
+      type: String,
+      select: false
+    },
+
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User"
+    },
+
+    updatedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User"
+    }
   },
   { timestamps: true }
 );
-
-export default mongoose.model("Client", clientSchema);
+module.exports = mongoose.model("Client", clientSchema);

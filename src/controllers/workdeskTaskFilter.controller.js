@@ -1,6 +1,6 @@
-import WorkdeskTaskFilter from "../models/workdeskTaskFilter.model.js";
+const WorkdeskTaskFilter = require("../models/workdeskTaskFilter.model.js");
 
-export const filterWorkdeskFilterTasks = async (req, res) => {
+const filterWorkdeskFilterTasks = async (req, res) => {
   try {
     const {
       tab = "ALL",
@@ -87,3 +87,5 @@ export const filterWorkdeskFilterTasks = async (req, res) => {
     });
   }
 };
+
+module.exports = { filterWorkdeskFilterTasks };

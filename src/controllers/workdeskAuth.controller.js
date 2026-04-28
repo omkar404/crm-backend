@@ -1,6 +1,7 @@
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const WorkdeskUser = require("../models/workdeskUser.model");
+const isProduction = process.env.NODE_ENV === "production";
 
 /* =========================
    TOKEN HELPERS
@@ -30,7 +31,8 @@ exports.register = async (req, res) => {
   try {
     const { name, email, password, role } = req.body;
 
-    const existingUser = await WorkdeskUser.findOne({ email });
+    const normalizedEmail = email.toLowerCase();
+    const existingUser = await WorkdeskUser.findOne({ email: normalizedEmail });
     if (existingUser) {
       return res.status(400).json({ message: "User already exists" });
     }
@@ -39,9 +41,9 @@ exports.register = async (req, res) => {
 
     await WorkdeskUser.create({
       name,
-      email,
+      email: normalizedEmail,
       password: hashedPassword,
-      role
+      role: role || "STAFF"
     });
 
     res.status(201).json({ message: "User registered successfully" });
@@ -53,8 +55,9 @@ exports.register = async (req, res) => {
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
+    const normalizedEmail = email.toLowerCase();
 
-    const user = await WorkdeskUser.findOne({ email });
+    const user = await WorkdeskUser.findOne({ email: normalizedEmail });
     if (!user) {
       return res.status(401).json({ message: "Invalid credentials" });
     }
@@ -69,8 +72,8 @@ exports.login = async (req, res) => {
 
     res.cookie("workdeskRefreshToken", refreshToken, {
       httpOnly: true,
-      sameSite: "strict",
-      secure: false, // true in production (HTTPS)
+      sameSite: isProduction ? "none" : "lax",
+      secure: isProduction,
       maxAge: 7 * 24 * 60 * 60 * 1000
     });
 
@@ -109,6 +112,10 @@ exports.me = async (req, res) => {
 };
 
 exports.logout = async (req, res) => {
-  res.clearCookie("workdeskRefreshToken");
+  res.clearCookie("workdeskRefreshToken", {
+    httpOnly: true,
+    sameSite: isProduction ? "none" : "lax",
+    secure: isProduction
+  });
   res.json({ message: "Logged out successfully" });
 };

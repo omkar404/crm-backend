@@ -1,4 +1,4 @@
-import mongoose from "mongoose";
+const mongoose = require("mongoose");
 
 const invoiceSchema = new mongoose.Schema(
   {
@@ -42,4 +42,4 @@ const invoiceSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-export default mongoose.model("Invoice", invoiceSchema);
+module.exports = mongoose.model("Invoice", invoiceSchema);

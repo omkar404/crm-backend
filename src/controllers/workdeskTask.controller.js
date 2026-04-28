@@ -1,17 +1,15 @@
-import Task from "../models/task.model.js";
-
-import { TASK_STATUSES, STATUS_TRANSITIONS } from "../models/task.model.js";
-
-import Client from "../models/client.model.js";
-import User from "../models/workdeskUser.model.js";
-import { DEFAULT_SERVICE_TYPES } from "../constants/serviceTypes.js"; 
+const Task = require("../models/task.model.js");
+const { TASK_STATUSES, STATUS_TRANSITIONS } = require("../models/task.model.js");
+const Client = require("../models/client.model.js");
+const User = require("../models/workdeskUser.model.js");
+const { DEFAULT_SERVICE_TYPES } = require("../constants/serviceTypes.js");
 
 const generateSR = () =>
   `SR-${new Date().getFullYear().toString().slice(-2)}${Math.floor(
     1000 + Math.random() * 9000
   )}`;
 
-export const createTask = async (req, res) => {
+const createTask = async (req, res) => {
   if (req.user.role !== "ADMIN") {
     return res.status(403).json({ message: "Only admin can allocate work" });
   }
@@ -106,7 +104,7 @@ export const createTask = async (req, res) => {
   res.status(201).json(task);
 };
 
-export const getTasks = async (req, res) => {
+const getTasks = async (req, res) => {
   const filter =
     req.user.role === "ADMIN"
       ? {}
@@ -121,7 +119,7 @@ export const getTasks = async (req, res) => {
   res.json(tasks);
 };
 
-export const updateTaskStatus = async (req, res) => {
+const updateTaskStatus = async (req, res) => {
   const { status } = req.body;
 
   if (!TASK_STATUSES.includes(status)) {
@@ -174,7 +172,7 @@ export const updateTaskStatus = async (req, res) => {
   res.json(task);
 };
 
-export const addComment = async (req, res) => {
+const addComment = async (req, res) => {
   const { text } = req.body;
 
   if (!text?.trim()) {
@@ -201,4 +199,11 @@ export const addComment = async (req, res) => {
 
   await task.save();
   res.json(task);
+};
+
+module.exports = {
+  createTask,
+  getTasks,
+  updateTaskStatus,
+  addComment
 };

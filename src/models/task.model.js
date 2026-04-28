@@ -1,4 +1,4 @@
-import mongoose from "mongoose";
+const mongoose = require("mongoose");
 
 const historySchema = new mongoose.Schema(
   {
@@ -22,7 +22,7 @@ const commentSchema = new mongoose.Schema({
   timestamp: Date
 });
 
-export const STATUS_TRANSITIONS = {
+const STATUS_TRANSITIONS = {
   "Request Initiated": [
     "Application Drafting in Progress"
   ],
@@ -67,7 +67,7 @@ export const STATUS_TRANSITIONS = {
   ]
 };
 
-export const TASK_STATUSES = [
+const TASK_STATUSES = [
   "Request Initiated",
   "Application Drafting in Progress",
   "Draft Sent for Approval",
@@ -132,4 +132,8 @@ const taskSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-export default mongoose.model("Task", taskSchema);
+const Task = mongoose.model("Task", taskSchema);
+
+module.exports = Task;
+module.exports.STATUS_TRANSITIONS = STATUS_TRANSITIONS;
+module.exports.TASK_STATUSES = TASK_STATUSES;

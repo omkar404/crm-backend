@@ -1,14 +1,16 @@
-import mongoose from "mongoose";
+const mongoose = require("mongoose");
 
 const chaSchema = new mongoose.Schema(
   {
-    name: { type: String, required: true },
+    chaname: { type: String, required: true },
     contactPerson: { type: String },
     mobile: { type: String },
     email: { type: String },
+    officeAddress: { type: String },
+    remarks: { type: String },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }
   },
   { timestamps: true }
 );
 
-export default mongoose.model("CHA", chaSchema);
+module.exports = mongoose.model("CHA", chaSchema);

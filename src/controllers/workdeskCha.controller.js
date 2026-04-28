@@ -1,18 +1,21 @@
-import CHA from "../models/cha.model.js";
+// import CHA from "../models/cha.model.js";
+const CHA = require("../models/cha.model.js");
 
 // ADMIN ONLY
-export const createCHA = async (req, res) => {
+const createCHA = async (req, res) => {
   if (req.user.role !== "ADMIN") {
     return res.status(403).json({ message: "Only admin can add CHA" });
   }
 
-  const { name, contactPerson, mobile, email } = req.body;
+  const { chaname, contactPerson, mobile, email, officeAddress, remarks } = req.body;
 
   const cha = await CHA.create({
-    name,
+    chaname,
     contactPerson,
     mobile,
     email,
+    officeAddress,
+    remarks,
     createdBy: req.user.id
   });
 
@@ -20,7 +23,9 @@ export const createCHA = async (req, res) => {
 };
 
 // ADMIN + STAFF
-export const getCHAs = async (_req, res) => {
+const getCHAs = async (_req, res) => {
   const chas = await CHA.find().sort({ createdAt: -1 });
   res.json(chas);
 };
+
+module.exports = { createCHA, getCHAs };

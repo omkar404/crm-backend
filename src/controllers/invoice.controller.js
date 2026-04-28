@@ -1,10 +1,10 @@
-import Invoice from "../models/invoice.model.js";
-import Task from "../models/task.model.js";
+const Invoice = require("../models/invoice.model.js");
+const Task = require("../models/task.model.js");
 
 const generateInvoiceNo = () =>
   `INV-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
 
-export const raiseInvoice = async (req, res) => {
+const raiseInvoice = async (req, res) => {
   if (req.user.role !== "ADMIN") {
     return res.status(403).json({ message: "Admin only" });
   }
@@ -60,7 +60,7 @@ export const raiseInvoice = async (req, res) => {
   res.status(201).json(invoice);
 };
 
-export const markInvoicePaid = async (req, res) => {
+const markInvoicePaid = async (req, res) => {
   if (req.user.role !== "ADMIN") {
     return res.status(403).json({ message: "Admin only" });
   }
@@ -85,7 +85,7 @@ export const markInvoicePaid = async (req, res) => {
   res.json(invoice);
 };
 
-export const getInvoices = async (req, res) => {
+const getInvoices = async (req, res) => {
   let invoices;
 
   if (req.user.role === "ADMIN") {
@@ -97,4 +97,10 @@ export const getInvoices = async (req, res) => {
   }
 
   res.json(invoices);
+};
+
+module.exports = {
+  raiseInvoice,
+  markInvoicePaid,
+  getInvoices
 };

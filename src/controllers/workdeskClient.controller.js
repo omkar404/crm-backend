@@ -1,49 +1,115 @@
-import Client from "../models/client.model.js";
-import CHA from "../models/cha.model.js";
-import { formatISTDate }  from "../utils/dateFormatter.js";
+const Client = require("../models/client.model.js");
+const CHA = require("../models/cha.model.js");
+const Counter = require("../models/counter.model.js");
+const { formatISTDate } = require("../utils/dateFormatter.js");
+const { encrypt } = require("../utils/encryption.js");
+const { asyncHandler } = require("../utils/asyncHandler.js");
+
+const sanitizeClient = (client) => {
+  const safeClient = client.toObject ? client.toObject() : { ...client };
+
+  delete safeClient.dgftPassword;
+  delete safeClient.icegatePassword;
+  delete safeClient.authSignatoryAadhaar;
+
+  if (Array.isArray(safeClient.dscLog)) {
+    safeClient.dscLog = safeClient.dscLog.map((log) => ({
+      ...log,
+      formattedDate: formatISTDate(log.date)
+    }));
+  }
+
+  return safeClient;
+};
 
 // helper for clientId
 const generateClientId = async () => {
-  const count = await Client.countDocuments();
-  return `CDCR-${501 + count}`;
+  const counter = await Counter.findOneAndUpdate(
+    { name: "clientId" },
+    { $inc: { value: 1 } },
+    { new: true, upsert: true }
+  );
+
+  return `CDCR-${counter.value}`;
 };
 
 // ADMIN ONLY
-export const createClient = async (req, res) => {
-  if (req.user.role !== "ADMIN") {
-    return res.status(403).json({ message: "Only admin can add client" });
-  }
+const createClient = async (req, res) => {
+  try {
+    if (req.user.role !== "ADMIN") {
+      return res.status(403).json({ message: "Only admin can add client" });
+    }
 
-  const data = req.body;
+    const {
+      name,
+      source,
+      chaId,
+      contactPerson,
+      contactEmail,
+      contactMobile,
+      dgftLogin,
+      dgftPassword,
+      icegateLogin,
+      icegatePassword,
+      dscHolder,
+      dscExpiry,
+      authSignatoryName,
+      authSignatoryMobile,
+      authSignatoryAadhaar
+    } = req.body;
 
-  let chaName = "";
-  if (data.source === "CHA" && data.chaId) {
-    const cha = await CHA.findById(data.chaId);
-    if (!cha) return res.status(400).json({ message: "Invalid CHA" });
-    chaName = cha.name;
-  }
+    if (!name) {
+      return res.status(400).json({ message: "Client name is required" });
+    }
 
-  const client = await Client.create({
-    ...data,
-    clientId: await generateClientId(),
-    chaName,
-    dscStatus: "Inward",
-    dscLog: [
-      {
-        status: "Inward",
-        note: "Initial Entry",
-        user: "Admin",
-        date: new Date()
+    let chaName = "";
+    if (source === "CHA" && chaId) {
+      const cha = await CHA.findById(chaId);
+      if (!cha) {
+        return res.status(400).json({ message: "Invalid CHA" });
       }
-    ],
-    createdBy: req.user.id
-  });
+      chaName = cha.chaname;
+    }
 
-  res.status(201).json(client);
+    const client = await Client.create({
+      name,
+      source,
+      chaId: source === "CHA" ? chaId : null,
+      chaName,
+      contactPerson,
+      contactEmail,
+      contactMobile,
+      dgftLogin,
+      dgftPassword: encrypt(dgftPassword),
+      icegateLogin,
+      icegatePassword: encrypt(icegatePassword),
+      dscHolder,
+      dscExpiry,
+      authSignatoryName,
+      authSignatoryMobile,
+      authSignatoryAadhaar: encrypt(authSignatoryAadhaar),
+      clientId: await generateClientId(),
+      dscStatus: "Inward",
+      dscLog: [
+        {
+          status: "Inward",
+          note: "Initial Entry",
+          user: req.user.id,
+          date: new Date()
+        }
+      ],
+      createdBy: req.user.id
+    });
+
+    return res.status(201).json(sanitizeClient(client));
+
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
 };
 
 // ADMIN ONLY
-export const updateClient = async (req, res) => {
+const updateClient = async (req, res) => {
   if (req.user.role !== "ADMIN") {
     return res.status(403).json({ message: "Only admin can update client" });
   }
@@ -59,10 +125,10 @@ export const updateClient = async (req, res) => {
   if (data.source === "CHA" && data.chaId) {
     const cha = await CHA.findById(data.chaId);
     if (!cha) return res.status(400).json({ message: "Invalid CHA" });
-    chaName = cha.name;
+    chaName = cha.chaname;
   }
 
-    if (data.dscStatus && data.dscStatus !== client.dscStatus) {
+  if (data.dscStatus && data.dscStatus !== client.dscStatus) {
     client.dscLog.push({
       status: data.dscStatus,
       note: data.note || "DSC status updated",
@@ -73,27 +139,64 @@ export const updateClient = async (req, res) => {
     client.dscStatus = data.dscStatus;
   }
 
+  if (data.dgftPassword) {
+    data.dgftPassword = encrypt(data.dgftPassword);
+  }
+
+  if (data.icegatePassword) {
+    data.icegatePassword = encrypt(data.icegatePassword);
+  }
+
+  if (data.authSignatoryAadhaar) {
+    data.authSignatoryAadhaar = encrypt(data.authSignatoryAadhaar);
+  }
+
   Object.assign(client, {
     ...data,
     chaName,
     updatedBy: req.user.id
   });
+  await client.save();
 
-  res.json(client);
+  res.json(sanitizeClient(client));
 };
 
 // ADMIN + STAFF
-export const getClients = async (_req, res) => {
-  const clients = await Client.find().sort({ createdAt: -1 });
-  res.json(clients);
+const getClients = asyncHandler(async (req, res) => {
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 10;
+  const search = req.query.search || "";
 
-  const formattedClients = clients.map(client => ({
-    ...client,
-    dscLog: client.dscLog.map(log => ({
-      ...log,
-      formattedDate: formatISTDate(log.date)
-    }))
-  }));
+  const skip = (page - 1) * limit;
 
-  res.json(formattedClients);
+  let filter = {};
+
+  if (req.user.role !== "ADMIN") {
+    filter.createdBy = req.user.id;
+  }
+
+  if (search) {
+    filter.name = { $regex: search, $options: "i" };
+  }
+
+  const total = await Client.countDocuments(filter);
+
+  const clients = await Client.find(filter)
+  .sort({ createdAt: -1 })
+  .skip(skip)
+  .limit(limit);
+  const formattedClients = clients.map(sanitizeClient);
+
+  res.json({
+    total,
+    page,
+    pages: Math.ceil(total / limit),
+    data: formattedClients
+  });
+});
+
+module.exports = {
+  createClient,
+  updateClient,
+  getClients
 };
