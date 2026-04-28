@@ -21,16 +21,10 @@
     "express": "^5.2.1",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
-<<<<<<< HEAD
     "mongodb": "^7.1.0",
-    "mongoose": "^8.19.3",
-    "multer": "^2.0.2",
-=======
-    "mongodb": "^7.0.0",
     "mongoose": "^8.23.0",
     "morgan": "^1.10.1",
     "multer": "^2.1.1",
->>>>>>> 4fca68705111ae1952d9b604ea5216633d0f6a68
     "node-cron": "^4.2.1",
     "nodemailer": "^7.0.13",
     "uuid": "^8.3.2",

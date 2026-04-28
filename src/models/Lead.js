@@ -1,110 +1,84 @@
 const mongoose = require("mongoose");
+const {
+  AEO_STATUS,
+  LEAD_PRIORITY,
+  LEAD_SOURCE,
+  LEAD_STATUS,
+  LEAD_TYPE,
+  STARTUP_CATEGORY,
+  TURNOVER_OPTIONS,
+} = require("../constants/crmOptions");
+
+const attachmentSchema = new mongoose.Schema(
+  {
+    originalName: { type: String, trim: true },
+    fileName: { type: String, trim: true },
+    path: { type: String, trim: true },
+    mimeType: { type: String, trim: true },
+    size: { type: Number, min: 0 },
+    extension: { type: String, trim: true },
+  },
+  { _id: false }
+);
 
 const leadSchema = new mongoose.Schema(
   {
-    idNo: { type: String, required: true, unique: true },
-    idDate: { type: Date, default: Date.now },
-
-    name: String,
-    iecChaNo: String,
-    landlineNo: String,
-    mobileNo: String,
-    email: String,
-    website: String,
-    address: String,
-    city: String,
-    state: String,
-    pinCode: String,
-    contactPerson: String,
-    designation: String,
-
-    employees: Number,
-    turnover: {
-      type: String,
-      enum: [
-        "NA",
-        "Less than 10 Cr",
-        "10 Cr - 50 Cr",
-        "50 Cr - 100 Cr",
-        "100 Cr - 500 Cr",
-        "Above 500 Cr",
-      ],
-    },
-
-    startupCategory: { type: String, enum: ["Yes", "No"] },
-
-    AEOStatus: {
-      type: String,
-      enum: ["NA", "AEO - T1", "AEO - T2", "AEO - T3", "AEO - LEO"],
-    },
-
-    RCMCPanel: String,
-    RCMCType: String,
-
-    industry: String,
-    industryBrief: String,
-
-    leadType: {
-      type: String,
-      enum: [
-        "CHA",
-        "Logistics",
-        "Freight Forwarder",
-        "Manufacturer",
-        "Importer",
-        "Exporter",
-      ],
-    },
-
-    priorityRating: {
-      type: String,
-      enum: ["Low", "Medium", "High", "Premium"],
-    },
-
-    leadSource: {
-      type: String,
-      enum: [
-        "RCMC Panel",
-        "CHA Panel",
-        "MCA Panel",
-        "Website",
-        "In Person",
-        "In Reference",
-        "Print Media",
-        "FSSAI Panel",
-        "EPR Panel",
-        "Web Media",
-        "AEO Panel",
-        "Others",
-      ],
-    },
-
+    idNo: { type: String, required: true, unique: true, index: true },
+    idDate: { type: Date, default: Date.now, index: true },
+    name: { type: String, required: true, trim: true, index: true },
+    iecChaNo: { type: String, trim: true, default: "" },
+    landlineNo: { type: String, trim: true, default: "" },
+    mobileNo: { type: String, trim: true, default: "" },
+    normalizedMobileNo: { type: String, trim: true, default: "", sparse: true, index: true },
+    email: { type: String, trim: true, default: "" },
+    normalizedEmail: { type: String, trim: true, default: "", sparse: true, index: true },
+    website: { type: String, trim: true, default: "" },
+    address: { type: String, trim: true, default: "" },
+    city: { type: String, trim: true, default: "", index: true },
+    state: { type: String, trim: true, default: "", index: true },
+    pinCode: { type: String, trim: true, default: "" },
+    contactPerson: { type: String, trim: true, default: "" },
+    designation: { type: String, trim: true, default: "" },
+    employees: { type: Number, min: 0, default: null },
+    turnover: { type: String, enum: TURNOVER_OPTIONS, default: undefined },
+    startupCategory: { type: String, enum: STARTUP_CATEGORY, default: undefined },
+    AEOStatus: { type: String, enum: AEO_STATUS, default: undefined },
+    RCMCPanel: { type: String, trim: true, default: "", index: true },
+    RCMCType: { type: String, trim: true, default: "" },
+    industry: { type: String, trim: true, default: "", index: true },
+    industryBrief: { type: String, trim: true, default: "" },
+    leadType: { type: String, enum: LEAD_TYPE, default: undefined, index: true },
+    priorityRating: { type: String, enum: LEAD_PRIORITY, default: undefined, index: true },
+    leadSource: { type: String, enum: LEAD_SOURCE, default: undefined, index: true },
     leadStatus: {
       type: String,
-      enum: [
-        "Not Contacted",
-        "Email Sent",
-        "Visit Scheduled",
-        "Email id incorrect",
-        "Contact on phone",
-        "In Contact",
-        "Interested",
-        "In Process",
-        "Login Created",
-        "Login Rejected",
-        "Not Interested",
-        "Not Contactable",
-        "Do Not Touch",
-        "Spam / Fake Lead",
-      ],
+      enum: LEAD_STATUS,
       default: "Not Contacted",
+      index: true,
     },
-
-    description: String,
-    notes: String,
-    isDeleted: { type: Boolean, default: false },
+    description: { type: String, default: "" },
+    notes: { type: String, default: "" },
+    attachments: { type: [attachmentSchema], default: [] },
+    metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null, index: true },
+    updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    isDeleted: { type: Boolean, default: false, index: true },
+    deletedAt: { type: Date, default: null },
   },
-  { timestamps: true }
+  { timestamps: true, minimize: false }
 );
 
-module.exports = mongoose.model("Lead", leadSchema);
+leadSchema.index({ isDeleted: 1, createdAt: -1 });
+leadSchema.index({ isDeleted: 1, leadStatus: 1, createdAt: -1 });
+leadSchema.index({ isDeleted: 1, leadType: 1, leadSource: 1 });
+leadSchema.index({
+  name: "text",
+  email: "text",
+  mobileNo: "text",
+  city: "text",
+  state: "text",
+  industry: "text",
+  notes: "text",
+});
+
+module.exports = mongoose.models.Lead || mongoose.model("Lead", leadSchema);

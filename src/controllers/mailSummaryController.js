@@ -4,11 +4,11 @@ const Mail = require("../models/Mail");
 exports.getMailSummary = async (req, res) => {
   try {
     const [statusCounts, priorityCounts, totalMails, unreadCount, recentMails] = await Promise.all([
-      Mail.aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }]),
-      Mail.aggregate([{ $group: { _id: "$priority", count: { $sum: 1 } } }]),
-      Mail.countDocuments(),
-      Mail.countDocuments({ isRead: false }),
-      Mail.find().sort({ createdAt: -1 }).limit(5).select("from to subject status sentAt createdAt"),
+      Mail.aggregate([{ $match: { isDeleted: false } }, { $group: { _id: "$status", count: { $sum: 1 } } }]),
+      Mail.aggregate([{ $match: { isDeleted: false } }, { $group: { _id: "$priority", count: { $sum: 1 } } }]),
+      Mail.countDocuments({ isDeleted: false }),
+      Mail.countDocuments({ isDeleted: false, lastOpenedAt: null }),
+      Mail.find({ isDeleted: false }).sort({ createdAt: -1 }).limit(5).select("from to subject status sentAt createdAt"),
     ]);
 
     const statusMap = {};
@@ -47,7 +47,7 @@ exports.getDailySummary = async (req, res) => {
     since.setDate(since.getDate() - days);
 
     const daily = await Mail.aggregate([
-      { $match: { createdAt: { $gte: since } } },
+      { $match: { isDeleted: false, createdAt: { $gte: since } } },
       {
         $group: {
           _id: { year: { $year: "$createdAt" }, month: { $month: "$createdAt" }, day: { $dayOfMonth: "$createdAt" } },
@@ -77,6 +77,7 @@ exports.getDailySummary = async (req, res) => {
 exports.getTagSummary = async (req, res) => {
   try {
     const tags = await Mail.aggregate([
+      { $match: { isDeleted: false } },
       { $unwind: "$tags" },
       { $group: { _id: "$tags", count: { $sum: 1 } } },
       { $sort: { count: -1 } },
