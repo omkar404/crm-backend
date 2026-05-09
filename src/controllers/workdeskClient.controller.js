@@ -2,7 +2,7 @@ const Client = require("../models/client.model.js");
 const CHA = require("../models/cha.model.js");
 const Counter = require("../models/counter.model.js");
 const { formatISTDate } = require("../utils/dateFormatter.js");
-const { encrypt } = require("../utils/encryption.js");
+const { encrypt, decrypt } = require("../utils/encryption.js");
 const { asyncHandler } = require("../utils/asyncHandler.js");
 
 const sanitizeClient = (client) => {
@@ -20,6 +20,19 @@ const sanitizeClient = (client) => {
   }
 
   return safeClient;
+};
+
+const withDecryptedSecrets = (client) => {
+  const safeClient = sanitizeClient(client);
+
+  return {
+    ...safeClient,
+    dgftPassword: client.dgftPassword ? decrypt(client.dgftPassword) : "",
+    icegatePassword: client.icegatePassword ? decrypt(client.icegatePassword) : "",
+    authSignatoryAadhaar: client.authSignatoryAadhaar
+      ? decrypt(client.authSignatoryAadhaar)
+      : "",
+  };
 };
 
 // helper for clientId
@@ -169,11 +182,7 @@ const getClients = asyncHandler(async (req, res) => {
 
   const skip = (page - 1) * limit;
 
-  let filter = {};
-
-  if (req.user.role !== "ADMIN") {
-    filter.createdBy = req.user.id;
-  }
+  const filter = {};
 
   if (search) {
     filter.name = { $regex: search, $options: "i" };
@@ -195,8 +204,25 @@ const getClients = asyncHandler(async (req, res) => {
   });
 });
 
+const getClientSecrets = asyncHandler(async (req, res) => {
+  if (req.user.role !== "ADMIN") {
+    return res.status(403).json({ message: "Only admin can view client secrets" });
+  }
+
+  const client = await Client.findById(req.params.id)
+    .select("+dgftPassword +icegatePassword +authSignatoryAadhaar");
+
+  if (!client) {
+    return res.status(404).json({ message: "Client not found" });
+  }
+
+  res.set("Cache-Control", "no-store");
+  res.json(withDecryptedSecrets(client));
+});
+
 module.exports = {
   createClient,
   updateClient,
-  getClients
+  getClients,
+  getClientSecrets
 };

@@ -6,11 +6,15 @@ module.exports = async (req, res, next) => {
     const authHeader = req.headers.authorization;
 
     if (!authHeader) {
-      res.status(401);
-      throw new Error("No token provided");
+      return res.status(401).json({ message: "Authentication required" });
     }
 
-    const token = authHeader.split(" ")[1];
+    const [scheme, tokenValue] = authHeader.split(" ");
+    const token = /^Bearer$/i.test(scheme) ? tokenValue : authHeader;
+
+    if (!token) {
+      return res.status(401).json({ message: "Authentication required" });
+    }
 
     const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
 
@@ -31,6 +35,10 @@ module.exports = async (req, res, next) => {
     next();
 
   } catch (error) {
+    if (error.name === "JsonWebTokenError" || error.name === "TokenExpiredError") {
+      return res.status(401).json({ message: "Invalid or expired token" });
+    }
+
     next(error);
   }
 };

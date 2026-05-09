@@ -2,6 +2,7 @@ const express = require("express");
 const {
   createTask,
   getTasks,
+  getTaskById,
   updateTaskStatus,
   addComment
 } = require("../controllers/workdeskTask.controller");
@@ -11,6 +12,7 @@ const router = express.Router();
 
 router.post("/tasks", workdeskAuth, createTask);
 router.get("/tasks", workdeskAuth, getTasks);
+router.get("/tasks/:id", workdeskAuth, getTaskById);
 router.put("/tasks/:id/status", workdeskAuth, updateTaskStatus);
 router.post("/tasks/:id/comments", workdeskAuth, addComment);
 

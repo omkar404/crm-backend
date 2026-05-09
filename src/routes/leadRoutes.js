@@ -17,6 +17,7 @@ const {
 const { getLeadSummary } = require("../controllers/leadSummaryController.");
 const auth = require("../middleware/auth");
 const { validate } = require("../middleware/validate");
+const { createRateLimiter } = require("../middleware/rateLimit");
 const { attachmentUpload, importUpload } = require("../utils/fileUpload");
 const {
   leadBulkDeleteSchema,
@@ -24,9 +25,15 @@ const {
 } = require("../validations/lead.validation");
 
 const router = express.Router();
+const authRateLimit = createRateLimiter({
+  keyPrefix: "crm-auth",
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: "Too many authentication attempts. Please try again later.",
+});
 
-router.post("/register", register);
-router.post("/login", login);
+router.post("/register", authRateLimit, register);
+router.post("/login", authRateLimit, login);
 
 router.get("/sample", auth, downloadSample);
 router.post("/import", auth, importUpload.single("file"), importLeads);

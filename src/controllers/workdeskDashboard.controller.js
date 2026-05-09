@@ -1,4 +1,4 @@
-const WorkdeskTask = require("../models/workdeskTaskFilter.model.js");
+const Task = require("../models/task.model.js");
 
 const getWorkdeskDashboardAnalytics = async (req, res) => {
     try {
@@ -19,73 +19,70 @@ const getWorkdeskDashboardAnalytics = async (req, res) => {
             baseMatch.assignedToUserId = user.id;
         }
 
-        /* ================= REQUEST VOLUME ================= */
-
-        const [daily, weekly, monthly, yearly] = await Promise.all([
-            WorkdeskTask.countDocuments({ ...baseMatch, createdAt: { $gte: startOfToday } }),
-            WorkdeskTask.countDocuments({ ...baseMatch, createdAt: { $gte: startOfWeek } }),
-            WorkdeskTask.countDocuments({ ...baseMatch, createdAt: { $gte: startOfMonth } }),
-            WorkdeskTask.countDocuments({ ...baseMatch, createdAt: { $gte: startOfYear } })
-        ]);
-
-        /* ================= STATUS COUNTS ================= */
-
-        const totalActive = await WorkdeskTask.countDocuments({
-            ...baseMatch,
-            status: { $ne: "Invoice Paid" }
-        });
-
-        const completed = await WorkdeskTask.countDocuments({
-            ...baseMatch,
-            status: "Invoice Paid"
-        });
-
-        const critical = await WorkdeskTask.countDocuments({
-            ...baseMatch,
-            status: {
-                $in: ["In Process", "Draft Sent for Approval", "Deficiency Raised"]
-            }
-        });
-
-        /* ================= STAFF LOAD ================= */
-
-        const staffLoad = await WorkdeskTask.aggregate([
-            { $match: { ...baseMatch, status: { $ne: "Invoice Paid" } } },
-            {
-                $group: {
-                    _id: "$assignedToName",
-                    count: { $sum: 1 }
+        const [
+            daily,
+            weekly,
+            monthly,
+            yearly,
+            totalActive,
+            completed,
+            critical,
+            staffLoad,
+            staffReadyInvoice,
+            overdue,
+            pending
+        ] = await Promise.all([
+            Task.countDocuments({ ...baseMatch, createdAt: { $gte: startOfToday } }),
+            Task.countDocuments({ ...baseMatch, createdAt: { $gte: startOfWeek } }),
+            Task.countDocuments({ ...baseMatch, createdAt: { $gte: startOfMonth } }),
+            Task.countDocuments({ ...baseMatch, createdAt: { $gte: startOfYear } }),
+            Task.countDocuments({
+                ...baseMatch,
+                status: { $ne: "Invoice Paid" }
+            }),
+            Task.countDocuments({
+                ...baseMatch,
+                status: "Invoice Paid"
+            }),
+            Task.countDocuments({
+                ...baseMatch,
+                status: {
+                    $in: ["In Process", "Draft Sent for Approval", "Deficiency Raised"]
                 }
-            }
-        ]);
-
-        const staffReadyInvoice = await WorkdeskTask.aggregate([
-            {
-                $match: {
-                    ...baseMatch,
-                    status: "Pending for Invoicing"
+            }),
+            Task.aggregate([
+                { $match: { ...baseMatch, status: { $ne: "Invoice Paid" } } },
+                {
+                    $group: {
+                        _id: "$assignedToName",
+                        count: { $sum: 1 }
+                    }
                 }
-            },
-            {
-                $group: {
-                    _id: "$assignedToName",
-                    count: { $sum: 1 }
+            ]),
+            Task.aggregate([
+                {
+                    $match: {
+                        ...baseMatch,
+                        status: "Pending for Invoicing"
+                    }
+                },
+                {
+                    $group: {
+                        _id: "$assignedToName",
+                        count: { $sum: 1 }
+                    }
                 }
-            }
+            ]),
+            Task.countDocuments({
+                ...baseMatch,
+                slaBreached: true,
+                status: { $ne: "Invoice Paid" }
+            }),
+            Task.countDocuments({
+                ...baseMatch,
+                status: { $nin: ["Invoice Paid", "Approved"] }
+            })
         ]);
-
-        /* ================= RISK ================= */
-
-        const overdue = await WorkdeskTask.countDocuments({
-            ...baseMatch,
-            slaBreached: true,
-            status: { $ne: "Invoice Paid" }
-        });
-
-        const pending = await WorkdeskTask.countDocuments({
-            ...baseMatch,
-            status: { $nin: ["Invoice Paid", "Approved"] }
-        });
 
         res.json({
             success: true,

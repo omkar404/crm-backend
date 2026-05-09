@@ -105,6 +105,7 @@ const taskSchema = new mongoose.Schema(
     // Assignment
     assignedToUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     assignedToName: String,
+    assignedToEmail: String,
 
     // SLA
     slaDays: Number,
@@ -131,6 +132,11 @@ const taskSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+taskSchema.index({ assignedToUserId: 1, createdAt: -1 });
+taskSchema.index({ status: 1, createdAt: -1 });
+taskSchema.index({ assignedToUserId: 1, status: 1, createdAt: -1 });
+taskSchema.index({ clientId: 1, createdAt: -1 });
 
 const Task = mongoose.model("Task", taskSchema);
 

@@ -1,4 +1,4 @@
-const WorkdeskTaskFilter = require("../models/workdeskTaskFilter.model.js");
+const Task = require("../models/task.model.js");
 
 const filterWorkdeskFilterTasks = async (req, res) => {
   try {
@@ -63,12 +63,12 @@ const filterWorkdeskFilterTasks = async (req, res) => {
 
     /* ================= QUERY ================= */
 
-    const tasks = await WorkdeskTaskFilter.find(query)
+    const tasks = await Task.find(query)
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(Number(limit));
 
-    const total = await WorkdeskTaskFilter.countDocuments(query);
+    const total = await Task.countDocuments(query);
 
     res.json({
       success: true,

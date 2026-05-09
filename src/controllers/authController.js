@@ -12,14 +12,15 @@ exports.register = async (req, res) => {
       return res.status(400).json({ error: "All fields are required" });
     }
 
-    const existing = await User.findOne({ email });
+    const normalizedEmail = email.toLowerCase();
+    const existing = await User.findOne({ email: normalizedEmail });
     if (existing) return res.status(400).json({ error: "User already exists" });
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const newUser = await User.create({
       name,
-      email,
+      email: normalizedEmail,
       password: hashedPassword,
       role: role || "sales", // default role
     });
@@ -55,8 +56,11 @@ exports.register = async (req, res) => {
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password are required" });
+    }
 
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) return res.status(400).json({ error: "Invalid credentials" });
 
     const isMatch = await bcrypt.compare(password, user.password);

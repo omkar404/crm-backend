@@ -1,11 +1,16 @@
 const crypto = require("crypto");
 
 const algorithm = "aes-256-cbc";
+const secretKey = process.env.SECRET_KEY;
+
+if (!secretKey) {
+  throw new Error("SECRET_KEY environment variable is required for encryption");
+}
 
 // Create 32-byte key from SECRET_KEY
 const key = crypto
   .createHash("sha256")
-  .update(process.env.SECRET_KEY)
+  .update(secretKey)
   .digest();
 
 const ivLength = 16;
