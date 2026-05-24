@@ -11,6 +11,11 @@ const sanitizeClient = (client) => {
   delete safeClient.dgftPassword;
   delete safeClient.icegatePassword;
   delete safeClient.authSignatoryAadhaar;
+  if (Array.isArray(safeClient.additionalPortalCredentials)) {
+    safeClient.additionalPortalCredentials = safeClient.additionalPortalCredentials.map(
+      ({ password, ...credential }) => credential
+    );
+  }
 
   if (Array.isArray(safeClient.dscLog)) {
     safeClient.dscLog = safeClient.dscLog.map((log) => ({
@@ -32,18 +37,85 @@ const withDecryptedSecrets = (client) => {
     authSignatoryAadhaar: client.authSignatoryAadhaar
       ? decrypt(client.authSignatoryAadhaar)
       : "",
+    additionalPortalCredentials: Array.isArray(client.additionalPortalCredentials)
+      ? client.additionalPortalCredentials.map((credential) => ({
+          portalName: credential.portalName || "",
+          userId: credential.userId || "",
+          password: credential.password ? decrypt(credential.password) : "",
+        }))
+      : [],
   };
 };
 
-// helper for clientId
-const generateClientId = async () => {
+const normalizeAdditionalPortalCredentials = (credentials = []) =>
+  (Array.isArray(credentials) ? credentials : [])
+    .map((credential = {}) => ({
+      portalName: String(credential.portalName || "").trim(),
+      userId: String(credential.userId || "").trim(),
+      password: credential.password ? encrypt(String(credential.password)) : "",
+    }))
+    .filter((credential) => credential.portalName || credential.userId || credential.password);
+
+const nextCdcrSeriesNumber = async () => {
   const counter = await Counter.findOneAndUpdate(
     { name: "clientId" },
     { $inc: { value: 1 } },
     { new: true, upsert: true }
   );
 
-  return `CDCR-${counter.value}`;
+  return counter.value;
+};
+
+const parseCdcrParts = (clientId = "") => {
+  const match = String(clientId).trim().match(/^CDCR-(\d+)(?:-(\d+))?$/i);
+  if (!match) return null;
+
+  return {
+    series: Number(match[1]),
+    suffix: match[2] ? Number(match[2]) : null,
+  };
+};
+
+const buildDirectClientId = async () => {
+  const series = await nextCdcrSeriesNumber();
+  return `CDCR-${series}`;
+};
+
+const buildChaClientId = async (cha) => {
+  let cdcrBase = cha.cdcrBase || "";
+
+  if (!cdcrBase) {
+    const existingChaClients = await Client.find({ chaId: cha._id })
+      .select("clientId")
+      .lean();
+
+    const firstParsed = existingChaClients
+      .map((item) => parseCdcrParts(item.clientId))
+      .find(Boolean);
+
+    if (firstParsed) {
+      cdcrBase = `CDCR-${firstParsed.series}`;
+    } else {
+      const nextSeries = await nextCdcrSeriesNumber();
+      cdcrBase = `CDCR-${nextSeries}`;
+    }
+
+    cha.cdcrBase = cdcrBase;
+    await cha.save();
+  }
+
+  const existingChaClients = await Client.find({ chaId: cha._id })
+    .select("clientId")
+    .lean();
+
+  const maxSuffix = existingChaClients.reduce((max, item) => {
+    const parsed = parseCdcrParts(item.clientId);
+    if (!parsed) return max;
+    if (`CDCR-${parsed.series}` !== cdcrBase) return max;
+    return Math.max(max, parsed.suffix || 0);
+  }, 0);
+
+  return `${cdcrBase}-${maxSuffix + 1}`;
 };
 
 // ADMIN ONLY
@@ -64,6 +136,7 @@ const createClient = async (req, res) => {
       dgftPassword,
       icegateLogin,
       icegatePassword,
+      additionalPortalCredentials,
       dscHolder,
       dscExpiry,
       authSignatoryName,
@@ -75,13 +148,21 @@ const createClient = async (req, res) => {
       return res.status(400).json({ message: "Client name is required" });
     }
 
+    if (source === "CHA" && !chaId) {
+      return res.status(400).json({ message: "CHA is required for CHA clients" });
+    }
+
     let chaName = "";
+    let generatedClientId = "";
     if (source === "CHA" && chaId) {
       const cha = await CHA.findById(chaId);
       if (!cha) {
         return res.status(400).json({ message: "Invalid CHA" });
       }
       chaName = cha.chaname;
+      generatedClientId = await buildChaClientId(cha);
+    } else {
+      generatedClientId = await buildDirectClientId();
     }
 
     const client = await Client.create({
@@ -96,12 +177,13 @@ const createClient = async (req, res) => {
       dgftPassword: encrypt(dgftPassword),
       icegateLogin,
       icegatePassword: encrypt(icegatePassword),
+      additionalPortalCredentials: normalizeAdditionalPortalCredentials(additionalPortalCredentials),
       dscHolder,
       dscExpiry,
       authSignatoryName,
       authSignatoryMobile,
       authSignatoryAadhaar: encrypt(authSignatoryAadhaar),
-      clientId: await generateClientId(),
+      clientId: generatedClientId,
       dscStatus: "Inward",
       dscLog: [
         {
@@ -164,6 +246,14 @@ const updateClient = async (req, res) => {
     data.authSignatoryAadhaar = encrypt(data.authSignatoryAadhaar);
   }
 
+  if (Object.prototype.hasOwnProperty.call(data, "additionalPortalCredentials")) {
+    data.additionalPortalCredentials = normalizeAdditionalPortalCredentials(
+      data.additionalPortalCredentials
+    );
+  }
+
+  delete data.clientId;
+
   Object.assign(client, {
     ...data,
     chaName,
@@ -210,7 +300,7 @@ const getClientSecrets = asyncHandler(async (req, res) => {
   }
 
   const client = await Client.findById(req.params.id)
-    .select("+dgftPassword +icegatePassword +authSignatoryAadhaar");
+    .select("+dgftPassword +icegatePassword +authSignatoryAadhaar +additionalPortalCredentials.password");
 
   if (!client) {
     return res.status(404).json({ message: "Client not found" });

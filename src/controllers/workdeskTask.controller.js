@@ -1,15 +1,50 @@
 const Task = require("../models/task.model.js");
-const { TASK_STATUSES } = require("../models/task.model.js");
+const { TASK_STATUSES, WORK_LEVELS, JOB_WORK_STATUSES } = require("../models/task.model.js");
 const Client = require("../models/client.model.js");
 const User = require("../models/workdeskUser.model.js");
 const Invoice = require("../models/invoice.model.js");
+const Counter = require("../models/counter.model.js");
 const sendEmail = require("../config/email.js");
 const { getServiceTypesConfig } = require("../utils/workdeskSettings.js");
+const SERVICE_REQUEST_COUNTER_NAME = "serviceRequestId";
+const SERVICE_REQUEST_SEQUENCE_START = 1200;
+const ADMIN_ONLY_TASK_STATUSES = ["Invoice Raised", "Invoice Paid"];
+const STRIKE_OFF_STATUS = "Strike Off";
 
-const generateSR = () =>
-  `SR-${new Date().getFullYear().toString().slice(-2)}${Math.floor(
-    1000 + Math.random() * 9000
-  )}`;
+const generateSR = async () => {
+  while (true) {
+    await Counter.updateOne(
+      { name: SERVICE_REQUEST_COUNTER_NAME },
+      {
+        $setOnInsert: {
+          name: SERVICE_REQUEST_COUNTER_NAME,
+          value: SERVICE_REQUEST_SEQUENCE_START - 1,
+        },
+      },
+      {
+        upsert: true,
+      }
+    );
+
+    const counter = await Counter.findOneAndUpdate(
+      { name: SERVICE_REQUEST_COUNTER_NAME },
+      {
+        $inc: { value: 1 },
+      },
+      {
+        new: true,
+        upsert: true,
+      }
+    );
+
+    const serviceRequestId = `SR-${counter.value}`;
+    const existingTask = await Task.exists({ serviceRequestId });
+
+    if (!existingTask) {
+      return serviceRequestId;
+    }
+  }
+};
 
 const formatDateTime = (value) => {
   if (!value) return "-";
@@ -20,6 +55,33 @@ const formatDateTime = (value) => {
     hour: "2-digit",
     minute: "2-digit",
   });
+};
+
+const formatAmount = (value) => {
+  if (value === null || value === undefined || value === "") return "-";
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return "-";
+  return numericValue.toLocaleString("en-IN", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  });
+};
+
+const formatDisplayValue = (value) => {
+  if (value === null || value === undefined || value === "") return "-";
+  const numericValue = Number(value);
+  if (Number.isFinite(numericValue) && String(value).trim() !== "") {
+    return formatAmount(numericValue);
+  }
+  return String(value);
+};
+
+const parseOptionalAmount = (value) => {
+  if (value === null || value === undefined || value === "") return null;
+  const normalizedValue =
+    typeof value === "string" ? value.replace(/,/g, "").trim() : value;
+  const numericValue = Number(normalizedValue);
+  return Number.isFinite(numericValue) ? numericValue : null;
 };
 
 const buildAllocationEmail = ({ task, client, staff, adminName }) => {
@@ -38,6 +100,7 @@ const buildAllocationEmail = ({ task, client, staff, adminName }) => {
     `Service Type: ${task.serviceType}`,
     `Sub Type: ${task.subType}`,
     `Assigned To: ${task.assignedToName}`,
+    `Work Level: ${task.workLevel || "-"}`,
     `Allocated By: ${adminName || "Admin"}`,
     `Status: ${task.status}`,
     `SLA (Days): ${task.slaDays}`,
@@ -45,6 +108,9 @@ const buildAllocationEmail = ({ task, client, staff, adminName }) => {
     `Client Sender Email: ${task.emailSender || "-"}`,
     `Received Date & Time: ${formatDateTime(task.emailDate)}`,
     `Special Instructions: ${task.details || "-"}`,
+    `Quotation: ${formatDisplayValue(task.quotation)}`,
+    `Official Fee: ${formatAmount(task.officialFee)}`,
+    `Service Charges: ${formatAmount(task.serviceCharges)}`,
     "",
     "Client contact details",
     `Contact Person: ${client.contactPerson || "-"}`,
@@ -69,6 +135,7 @@ const buildAllocationEmail = ({ task, client, staff, adminName }) => {
             ["Service Type", task.serviceType],
             ["Sub Type", task.subType],
             ["Assigned To", task.assignedToName],
+            ["Work Level", task.workLevel || "-"],
             ["Allocated By", adminName || "Admin"],
             ["Status", task.status],
             ["SLA (Days)", task.slaDays],
@@ -76,6 +143,9 @@ const buildAllocationEmail = ({ task, client, staff, adminName }) => {
             ["Client Sender Email", task.emailSender || "-"],
             ["Received Date & Time", formatDateTime(task.emailDate)],
             ["Special Instructions", task.details || "-"],
+            ["Quotation", formatDisplayValue(task.quotation)],
+            ["Official Fee", formatAmount(task.officialFee)],
+            ["Service Charges", formatAmount(task.serviceCharges)],
             ["Contact Person", client.contactPerson || "-"],
             ["Contact Mobile", client.contactMobile || "-"],
             ["Contact Email", client.contactEmail || "-"],
@@ -116,7 +186,20 @@ const createTask = async (req, res) => {
     details,
     emailSender,
     emailDate,
+    quotation,
+    officialFee,
+    serviceCharges,
+    workLevel,
   } = req.body;
+
+  const normalizedQuotation = typeof quotation === "string" ? quotation.trim() : "";
+  const normalizedWorkLevel = typeof workLevel === "string" ? workLevel.trim() : "";
+  const normalizedOfficialFee = parseOptionalAmount(officialFee);
+  const normalizedServiceCharges = parseOptionalAmount(serviceCharges);
+
+  if (normalizedWorkLevel && !WORK_LEVELS.includes(normalizedWorkLevel)) {
+    return res.status(400).json({ message: "Invalid work level" });
+  }
 
   if (!clientId || !serviceType || !subType || !assignedToUserId) {
     return res.status(400).json({
@@ -161,8 +244,8 @@ const createTask = async (req, res) => {
   const deadline = new Date();
   deadline.setDate(deadline.getDate() + finalSlaDays);
 
-  const task = await Task.create({
-    serviceRequestId: generateSR(),
+  const createdTask = await Task.create({
+    serviceRequestId: await generateSR(),
     clientId: client._id,
     clientName: client.name,
     clientDisplayId: client.clientId,
@@ -174,11 +257,16 @@ const createTask = async (req, res) => {
     assignedToUserId: staff._id,
     assignedToName: staff.name,
     assignedToEmail: staff.email,
+    workLevel: normalizedWorkLevel,
+    jobWorkStatus: "Active",
     slaDays: finalSlaDays,
     deadline,
     emailSender: normalizedSenderEmail || null,
     emailDate: emailDate ? new Date(emailDate) : null,
     details: details || "",
+    quotation: normalizedQuotation,
+    officialFee: normalizedOfficialFee,
+    serviceCharges: normalizedServiceCharges,
     status: "Request Initiated",
     history: [
       {
@@ -189,6 +277,23 @@ const createTask = async (req, res) => {
     ],
     createdByAdminId: req.user.id,
   });
+
+  const task = await Task.findByIdAndUpdate(
+    createdTask._id,
+    {
+      $set: {
+        quotation: normalizedQuotation,
+        officialFee: normalizedOfficialFee,
+        serviceCharges: normalizedServiceCharges,
+        workLevel: normalizedWorkLevel,
+      },
+    },
+    { new: true }
+  );
+
+  if (!task) {
+    return res.status(500).json({ message: "Task created but failed to reload saved data" });
+  }
 
   let emailInfo = { sent: false };
   try {
@@ -216,19 +321,32 @@ const createTask = async (req, res) => {
     };
   }
 
+  const responseTask = task.toObject();
+
   res.status(201).json({
-    ...task.toObject(),
+    ...responseTask,
+    quotation: normalizedQuotation,
+    officialFee: normalizedOfficialFee,
+    serviceCharges: normalizedServiceCharges,
+    workLevel: normalizedWorkLevel,
     notification: emailInfo,
   });
 };
 
 const getTasks = async (req, res) => {
-  const filter = req.user.role === "ADMIN" ? {} : { assignedToUserId: req.user.id };
+  const isAdmin = req.user.role === "ADMIN";
+  const filter = isAdmin
+    ? {}
+    : {
+        assignedToUserId: req.user.id,
+        status: { $ne: STRIKE_OFF_STATUS },
+        jobWorkStatus: { $ne: STRIKE_OFF_STATUS },
+      };
 
   const tasks = await Task.find(filter)
     .sort({ createdAt: -1 })
     .select(
-      "serviceRequestId clientName clientDisplayId clientSource chaName serviceType subType assignedToName assignedToEmail deadline emailSender status details createdAt"
+      "serviceRequestId clientName clientDisplayId clientSource chaName serviceType subType assignedToUserId assignedToName assignedToEmail workLevel jobWorkStatus deadline emailSender status details quotation officialFee serviceCharges createdAt"
     )
     .lean();
 
@@ -241,11 +359,19 @@ const getTaskById = async (req, res) => {
     return res.status(404).json({ message: "Task not found" });
   }
 
-  if (req.user.role === "STAFF" && task.assignedToUserId.toString() !== req.user.id) {
+  const isAdmin = req.user.role === "ADMIN";
+
+  if (!isAdmin && task.assignedToUserId.toString() !== req.user.id) {
     return res.status(403).json({ message: "Forbidden" });
   }
 
-  const invoice = await Invoice.findOne({ taskId: task._id }).sort({ createdAt: -1 }).lean();
+  if (!isAdmin && (task.status === STRIKE_OFF_STATUS || task.jobWorkStatus === STRIKE_OFF_STATUS)) {
+    return res.status(403).json({ message: "Forbidden" });
+  }
+
+  const invoice = isAdmin
+    ? await Invoice.findOne({ taskId: task._id }).sort({ createdAt: -1 }).lean()
+    : null;
 
   res.json({
     ...task.toObject(),
@@ -260,12 +386,22 @@ const updateTaskStatus = async (req, res) => {
     return res.status(400).json({ message: "Invalid status" });
   }
 
+  if (status === STRIKE_OFF_STATUS && req.user.role !== "ADMIN") {
+    return res.status(403).json({ message: "Only admin can strike off tasks" });
+  }
+
+  if (ADMIN_ONLY_TASK_STATUSES.includes(status)) {
+    return res.status(400).json({
+      message: "Invoice statuses can only be managed from Invoice Management",
+    });
+  }
+
   const task = await Task.findById(req.params.id).select("_id assignedToUserId status slaBreached");
   if (!task) {
     return res.status(404).json({ message: "Task not found" });
   }
 
-  if (req.user.role === "STAFF" && task.assignedToUserId.toString() !== req.user.id) {
+  if (req.user.role !== "ADMIN" && task.assignedToUserId.toString() !== req.user.id) {
     return res.status(403).json({ message: "Forbidden" });
   }
 
@@ -308,6 +444,59 @@ const updateTaskStatus = async (req, res) => {
   res.json(updatedTask);
 };
 
+const updateTaskJobWork = async (req, res) => {
+  const { jobWorkStatus } = req.body;
+
+  if (!JOB_WORK_STATUSES.includes(jobWorkStatus) || jobWorkStatus === "Active") {
+    return res.status(400).json({ message: "Invalid job work status" });
+  }
+
+  const task = await Task.findById(req.params.id).select(
+    "_id assignedToUserId jobWorkStatus status"
+  );
+  if (!task) {
+    return res.status(404).json({ message: "Task not found" });
+  }
+
+  if (req.user.role !== "ADMIN" && task.assignedToUserId.toString() !== req.user.id) {
+    return res.status(403).json({ message: "Forbidden" });
+  }
+
+  if (task.jobWorkStatus === jobWorkStatus) {
+    return res.status(400).json({ message: "Task already in this job work status" });
+  }
+
+  const previousJobWorkStatus = task.jobWorkStatus || "Active";
+  const timestamp = new Date();
+
+  const updatedTask = await Task.findByIdAndUpdate(
+    req.params.id,
+    {
+      $set: {
+        jobWorkStatus,
+        updatedAt: timestamp,
+      },
+      $push: {
+        history: {
+          fromStatus: previousJobWorkStatus,
+          toStatus: jobWorkStatus,
+          action: "JOB_WORK_UPDATE",
+          performedById: req.user.id,
+          performedByName: req.user.name,
+          note:
+            jobWorkStatus === "Completed"
+              ? "Job work marked as completed"
+              : "Task marked as strike off",
+          timestamp,
+        },
+      },
+    },
+    { new: true }
+  );
+
+  res.json(updatedTask);
+};
+
 const addComment = async (req, res) => {
   const { text } = req.body;
 
@@ -320,7 +509,7 @@ const addComment = async (req, res) => {
     return res.status(404).json({ message: "Task not found" });
   }
 
-  if (req.user.role === "STAFF" && task.assignedToUserId.toString() !== req.user.id) {
+  if (req.user.role !== "ADMIN" && task.assignedToUserId.toString() !== req.user.id) {
     return res.status(403).json({ message: "Forbidden" });
   }
 
@@ -346,5 +535,6 @@ module.exports = {
   getTasks,
   getTaskById,
   updateTaskStatus,
+  updateTaskJobWork,
   addComment,
 };

@@ -31,6 +31,15 @@ contactMobile: z
 
   icegateLogin: z.string().optional(),
   icegatePassword: z.string().optional(),
+  additionalPortalCredentials: z
+    .array(
+      z.object({
+        portalName: z.string().optional(),
+        userId: z.string().optional(),
+        password: z.string().optional(),
+      })
+    )
+    .optional(),
 
   dscHolder: z.string().optional(),
   dscExpiry: z.string().optional(),

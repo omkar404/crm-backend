@@ -1,30 +1,35 @@
 const WorkdeskUser = require("../models/workdeskUser.model");
 const { getServiceTypesConfig, setServiceTypesConfig } = require("../utils/workdeskSettings");
 
-const getWorkdeskMeta = async (_req, res) => {
+const getWorkdeskMeta = async (req, res) => {
   const staff = await WorkdeskUser.find({ role: "STAFF" })
     .sort({ name: 1 })
     .select("_id name email role");
   const serviceTypes = await getServiceTypesConfig();
+  const workflowStatuses = [
+    "Request Initiated",
+    "Quote to be Sent",
+    "Quote Approval Pending",
+    "Quote Approved",
+    "Application Drafting in Progress",
+    "Draft Sent for Approval",
+    "Draft Approved",
+    "Submission",
+    "Official Fees Paid",
+    "In Process",
+    "Deficiency Raised",
+    "Deficiency Query Reply Awaited from Client",
+    "Deficiency Replied",
+    "Approved",
+    "Pending for Invoicing",
+    "Invoice Raised",
+    "Invoice Paid",
+  ];
+  const adminWorkflowStatuses = [...workflowStatuses, "Strike Off"];
 
   res.json({
     serviceTypes,
-    workflowStatuses: [
-      "Request Initiated",
-      "Application Drafting in Progress",
-      "Draft Sent for Approval",
-      "Draft Approved",
-      "Submission",
-      "Official Fees Paid",
-      "In Process",
-      "Deficiency Raised",
-      "Deficiency Query Reply Awaited from Client",
-      "Deficiency Replied",
-      "Approved",
-      "Pending for Invoicing",
-      "Invoice Raised",
-      "Invoice Paid",
-    ],
+    workflowStatuses: req.user.role === "ADMIN" ? adminWorkflowStatuses : workflowStatuses,
     staff,
   });
 };

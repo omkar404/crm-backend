@@ -60,6 +60,25 @@ const LEAD_STATUS = [
   "Spam / Fake Lead",
 ];
 
+const INDUSTRY_OPTIONS = [
+  "Agriculture & Farming",
+  "Mining & Quarrying",
+  "Manufacturing",
+  "Construction",
+  "Utilities",
+  "IT & Software Services",
+  "Financial Services",
+  "Trade (Wholesale & Retail)",
+  "Transport & Logistics",
+  "Tourism & Hospitality",
+  "Telecommunications",
+  "Healthcare",
+  "Education",
+  "Media & Entertainment",
+  "Professional Services",
+  "Public Administration",
+];
+
 const TURNOVER_OPTIONS = [
   "NA",
   "Less than 10 Cr",
@@ -73,6 +92,8 @@ const STARTUP_CATEGORY = ["Yes", "No"];
 
 const AEO_STATUS = ["NA", "AEO - T1", "AEO - T2", "AEO - T3", "AEO - LEO"];
 
+const RCMC_PANEL_OPTIONS = LEAD_SOURCE.filter((value) => value.includes("Panel"));
+
 module.exports = {
   MAIL_STATUS,
   MAIL_PRIORITY,
@@ -80,7 +101,9 @@ module.exports = {
   LEAD_PRIORITY,
   LEAD_SOURCE,
   LEAD_STATUS,
+  INDUSTRY_OPTIONS,
   TURNOVER_OPTIONS,
   STARTUP_CATEGORY,
   AEO_STATUS,
+  RCMC_PANEL_OPTIONS,
 };

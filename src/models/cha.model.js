@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const chaSchema = new mongoose.Schema(
   {
     chaname: { type: String, required: true },
+    cdcrBase: { type: String, default: "" },
     contactPerson: { type: String },
     mobile: { type: String },
     email: { type: String },

@@ -22,6 +22,11 @@ const invoiceSchema = new mongoose.Schema(
     handledByName: String,
 
     // Amounts
+    quotationAmount: Number,
+    quotationMode: String,
+    officialFee: Number,
+    serviceCharges: Number,
+    netAmount: Number,
     amount: Number,
     gstPercent: Number,
     gstAmount: Number,
@@ -36,6 +41,9 @@ const invoiceSchema = new mongoose.Schema(
 
     issuedDate: Date,
     paidDate: Date,
+    receivedAmount: Number,
+    tdsAmount: Number,
+    receiptAcknowledgement: String,
 
     createdByAdminId: { type: mongoose.Schema.Types.ObjectId, ref: "User" }
   },

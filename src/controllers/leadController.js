@@ -2,8 +2,15 @@ const fs = require("fs");
 const path = require("path");
 const XLSX = require("xlsx");
 const Lead = require("../models/Lead");
-const { LEAD_STATUS } = require("../constants/crmOptions");
-const { getMappedStateForCity } = require("../constants/locationOptions");
+const Counter = require("../models/counter.model");
+const {
+  AEO_STATUS,
+  INDUSTRY_OPTIONS,
+  LEAD_SOURCE,
+  LEAD_STATUS,
+  LEAD_TYPE,
+  RCMC_PANEL_OPTIONS,
+} = require("../constants/crmOptions");
 const { asyncHandler } = require("../utils/asyncHandler");
 const {
   buildAttachmentMeta,
@@ -17,6 +24,12 @@ const {
   parseMaybeJson,
   parsePositiveInt,
 } = require("../utils/crm");
+const {
+  syncLeadDeletionToMail,
+  syncLeadsToMailBulk,
+  syncLeadStatusToMail,
+  syncLeadToMail,
+} = require("../utils/leadMailSync");
 
 const ALL_FIELDS = [
   "name",
@@ -43,11 +56,139 @@ const ALL_FIELDS = [
   "priorityRating",
   "leadSource",
   "leadStatus",
+  "senderEmail",
+  "emailVerifiedStatus",
+  "wifi",
+  "browser",
+  "emailSentOn",
+  "emailTemplate",
+  "emailSubjectCode",
+  "emailSeen",
+  "emailStatus",
+  "enquiryStatus",
+  "turnup",
+  "cdcrNo",
+  "cdcrCreation",
   "description",
   "notes",
 ];
 
 const sampleFilePath = path.join(__dirname, "../static/sample-leads.xlsx");
+
+const mergeFilterOptions = (...optionSets) => [
+  ...new Set(
+    optionSets.flat().map((value) => cleanString(value)).filter(Boolean)
+  ),
+];
+
+const buildLeadFilterOptionsPayload = async () => {
+  const baseFilter = { isDeleted: false };
+  const [industry, leadType, leadSource, leadStatus, AEOStatus, RCMCPanel, city, state, priorityRating] =
+    await Promise.all([
+      Lead.distinct("industry", baseFilter),
+      Lead.distinct("leadType", baseFilter),
+      Lead.distinct("leadSource", baseFilter),
+      Lead.distinct("leadStatus", baseFilter),
+      Lead.distinct("AEOStatus", baseFilter),
+      Lead.distinct("RCMCPanel", baseFilter),
+      Lead.distinct("city", baseFilter),
+      Lead.distinct("state", baseFilter),
+      Lead.distinct("priorityRating", baseFilter),
+    ]);
+
+  return {
+    industry: mergeFilterOptions(INDUSTRY_OPTIONS, industry),
+    leadType: mergeFilterOptions(LEAD_TYPE, leadType),
+    leadSource: mergeFilterOptions(LEAD_SOURCE, leadSource),
+    leadStatus: mergeFilterOptions(LEAD_STATUS, leadStatus),
+    AEOStatus: mergeFilterOptions(AEO_STATUS, AEOStatus),
+    RCMCPanel: mergeFilterOptions(RCMC_PANEL_OPTIONS, RCMCPanel),
+    city: mergeFilterOptions(city),
+    state: mergeFilterOptions(state),
+    priorityRating: mergeFilterOptions(priorityRating),
+  };
+};
+
+const normalizeImportHeader = (value) =>
+  cleanString(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+
+const createHeaderAliasMap = (aliases) => {
+  const map = new Map();
+  Object.entries(aliases).forEach(([field, values]) => {
+    values.forEach((value) => {
+      map.set(normalizeImportHeader(value), field);
+    });
+  });
+  return map;
+};
+
+const LEAD_IMPORT_HEADER_MAP = createHeaderAliasMap({
+  name: ["name", "client name", "name of client", "company name"],
+  iecChaNo: ["iecchano", "iec cha no", "iec/cha no", "iec cha number"],
+  landlineNo: ["landlineno", "landline no", "landline number", "telephone"],
+  mobileNo: ["mobileno", "mobile no", "mobile", "mobile number", "phone", "phone number", "contact mobile"],
+  email: ["email", "email id", "email address", "client email"],
+  website: ["website", "web site", "url"],
+  address: ["address", "office address"],
+  city: ["city"],
+  state: ["state"],
+  pinCode: ["pincode", "pin code", "zipcode", "zip code", "postal code"],
+  contactPerson: ["contactperson", "contact person", "primary contact"],
+  designation: ["designation", "role"],
+  employees: ["employees", "employee count", "staff count"],
+  turnover: ["turnover"],
+  startupCategory: ["startupcategory", "startup category"],
+  AEOStatus: ["aeostatus", "aeo status"],
+  RCMCPanel: ["rcmcpanel", "rcmc panel"],
+  RCMCType: ["rcmctype", "rcmc type"],
+  industry: ["industry"],
+  industryBrief: ["industrybrief", "industry brief"],
+  leadType: ["leadtype", "lead type"],
+  priorityRating: ["priorityrating", "priority rating", "priority"],
+  leadSource: ["leadsource", "lead source"],
+  leadStatus: ["leadstatus", "lead status", "status"],
+  senderEmail: ["senderemail", "sender email", "email sent", "from", "from email"],
+  emailVerifiedStatus: ["emailverifiedstatus", "email verified status", "email verified", "verify email"],
+  wifi: ["wifi"],
+  browser: ["browser"],
+  emailSentOn: ["emailsenton", "email sent on", "date"],
+  emailTemplate: ["emailtemplate", "email template", "template"],
+  emailSubjectCode: ["emailsubjectcode", "email subject code", "email subject", "subject code"],
+  emailSeen: ["emailseen", "email seen"],
+  emailStatus: ["emailstatus", "email status", "mail status"],
+  enquiryStatus: ["enquirystatus", "enquiry status"],
+  turnup: ["turnup", "turn up"],
+  cdcrNo: ["cdcrno", "cdcr no", "cdcr number", "cdcr"],
+  cdcrCreation: ["cdcrcreation", "cdcr creation", "cdcr creation date"],
+  description: ["description"],
+  notes: ["notes", "note"],
+});
+
+const mapSheetRowsByHeaders = (sheet, headerMap) => {
+  const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+  if (!matrix.length) {
+    return [];
+  }
+
+  const rawHeaders = matrix[0] || [];
+  const mappedHeaders = rawHeaders.map((header) => {
+    const normalized = normalizeImportHeader(header);
+    return headerMap.get(normalized) || cleanString(header);
+  });
+
+  return matrix
+    .slice(1)
+    .filter((row) => row.some((value) => cleanString(value) !== ""))
+    .map((row) => {
+      const mappedRow = {};
+      mappedHeaders.forEach((key, index) => {
+        mappedRow[key || `__empty_${index}`] = row[index];
+      });
+      return mappedRow;
+    });
+};
 
 const buildLeadPayload = (req, existing = {}) => {
   const body = req.body || {};
@@ -57,7 +198,6 @@ const buildLeadPayload = (req, existing = {}) => {
 
   const city = cleanString(body.city ?? existing.city);
   const incomingState = cleanString(body.state ?? existing.state);
-  const mappedState = getMappedStateForCity(city);
 
   const payload = {
     name: cleanString(body.name ?? existing.name),
@@ -67,7 +207,7 @@ const buildLeadPayload = (req, existing = {}) => {
     website: cleanString(body.website ?? existing.website),
     address: cleanString(body.address ?? existing.address),
     city,
-    state: mappedState || incomingState,
+    state: incomingState,
     pinCode: cleanString(body.pinCode ?? existing.pinCode),
     contactPerson: cleanString(body.contactPerson ?? existing.contactPerson),
     designation: cleanString(body.designation ?? existing.designation),
@@ -86,6 +226,19 @@ const buildLeadPayload = (req, existing = {}) => {
     priorityRating: body.priorityRating || existing.priorityRating,
     leadSource: body.leadSource || existing.leadSource,
     leadStatus: body.leadStatus || existing.leadStatus || "Not Contacted",
+    senderEmail: normalizeEmail(body.senderEmail ?? existing.senderEmail),
+    emailVerifiedStatus: cleanString(body.emailVerifiedStatus ?? existing.emailVerifiedStatus),
+    wifi: cleanString(body.wifi ?? existing.wifi),
+    browser: cleanString(body.browser ?? existing.browser),
+    emailSentOn: body.emailSentOn || existing.emailSentOn || null,
+    emailTemplate: cleanString(body.emailTemplate ?? existing.emailTemplate),
+    emailSubjectCode: cleanString(body.emailSubjectCode ?? existing.emailSubjectCode),
+    emailSeen: cleanString(body.emailSeen ?? existing.emailSeen),
+    emailStatus: cleanString(body.emailStatus ?? existing.emailStatus),
+    enquiryStatus: cleanString(body.enquiryStatus ?? existing.enquiryStatus),
+    turnup: cleanString(body.turnup ?? existing.turnup),
+    cdcrNo: cleanString(body.cdcrNo ?? existing.cdcrNo),
+    cdcrCreation: body.cdcrCreation || existing.cdcrCreation || null,
     description: body.description ?? existing.description ?? "",
     notes: body.notes ?? existing.notes ?? "",
     email: normalizeEmail(body.email ?? existing.email),
@@ -155,13 +308,11 @@ const buildLeadQuery = (query) => {
 };
 
 function generateSample() {
-  if (!fs.existsSync(sampleFilePath)) {
-    const ws = XLSX.utils.aoa_to_sheet([ALL_FIELDS]);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Sample");
-    fs.mkdirSync(path.dirname(sampleFilePath), { recursive: true });
-    XLSX.writeFile(wb, sampleFilePath);
-  }
+  const ws = XLSX.utils.aoa_to_sheet([ALL_FIELDS]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Sample");
+  fs.mkdirSync(path.dirname(sampleFilePath), { recursive: true });
+  XLSX.writeFile(wb, sampleFilePath);
 }
 
 generateSample();
@@ -213,33 +364,9 @@ const getDashboardStats = asyncHandler(async (req, res) => {
 });
 
 const getLeadFilterOptions = asyncHandler(async (req, res) => {
-  const baseFilter = { isDeleted: false };
-  const [industry, leadType, leadSource, leadStatus, AEOStatus, RCMCPanel, city, state, priorityRating] =
-    await Promise.all([
-      Lead.distinct("industry", baseFilter),
-      Lead.distinct("leadType", baseFilter),
-      Lead.distinct("leadSource", baseFilter),
-      Lead.distinct("leadStatus", baseFilter),
-      Lead.distinct("AEOStatus", baseFilter),
-      Lead.distinct("RCMCPanel", baseFilter),
-      Lead.distinct("city", baseFilter),
-      Lead.distinct("state", baseFilter),
-      Lead.distinct("priorityRating", baseFilter),
-    ]);
-
   res.json({
     success: true,
-    data: {
-      industry: industry.filter(Boolean),
-      leadType: leadType.filter(Boolean),
-      leadSource: leadSource.filter(Boolean),
-      leadStatus: leadStatus.filter(Boolean),
-      AEOStatus: AEOStatus.filter(Boolean),
-      RCMCPanel: RCMCPanel.filter(Boolean),
-      city: city.filter(Boolean),
-      state: state.filter(Boolean),
-      priorityRating: priorityRating.filter(Boolean),
-    },
+    data: await buildLeadFilterOptionsPayload(),
   });
 });
 
@@ -267,6 +394,7 @@ const createLead = asyncHandler(async (req, res) => {
   payload.updatedBy = req.user?.id || null;
 
   const lead = await Lead.create(payload);
+  await syncLeadToMail(lead.toObject(), req.user?.id);
 
   res.status(201).json({
     success: true,
@@ -303,6 +431,7 @@ const updateLead = asyncHandler(async (req, res) => {
   payload.updatedBy = req.user?.id || null;
   Object.assign(existing, payload);
   await existing.save();
+  await syncLeadToMail(existing.toObject(), req.user?.id);
 
   res.json({
     success: true,
@@ -322,6 +451,8 @@ const deleteLead = asyncHandler(async (req, res) => {
     res.status(404);
     throw new Error("Lead not found");
   }
+
+  await syncLeadDeletionToMail(deleted.toObject(), req.user?.id);
 
   res.json({ success: true, message: "Lead deleted successfully", lead: deleted });
 });
@@ -348,31 +479,7 @@ const listLeads = asyncHandler(async (req, res) => {
   };
 
   if (includeFilters) {
-    const baseFilter = { isDeleted: false };
-    const [industry, leadType, leadSource, leadStatus, AEOStatus, RCMCPanel, city, state, priorityRating] =
-      await Promise.all([
-        Lead.distinct("industry", baseFilter),
-        Lead.distinct("leadType", baseFilter),
-        Lead.distinct("leadSource", baseFilter),
-        Lead.distinct("leadStatus", baseFilter),
-        Lead.distinct("AEOStatus", baseFilter),
-        Lead.distinct("RCMCPanel", baseFilter),
-        Lead.distinct("city", baseFilter),
-        Lead.distinct("state", baseFilter),
-        Lead.distinct("priorityRating", baseFilter),
-      ]);
-
-    response.filterOptions = {
-      industry: industry.filter(Boolean),
-      leadType: leadType.filter(Boolean),
-      leadSource: leadSource.filter(Boolean),
-      leadStatus: leadStatus.filter(Boolean),
-      AEOStatus: AEOStatus.filter(Boolean),
-      RCMCPanel: RCMCPanel.filter(Boolean),
-      city: city.filter(Boolean),
-      state: state.filter(Boolean),
-      priorityRating: priorityRating.filter(Boolean),
-    };
+    response.filterOptions = await buildLeadFilterOptionsPayload();
   }
 
   res.json(response);
@@ -407,23 +514,32 @@ const updateStatus = asyncHandler(async (req, res) => {
     throw new Error("Lead not found");
   }
 
+  await syncLeadStatusToMail(updated.toObject(), req.user?.id);
+
   res.json({ success: true, lead: updated });
 });
 
 const downloadSample = asyncHandler(async (req, res) => {
+  generateSample();
+  const fileBuffer = fs.readFileSync(sampleFilePath);
+
   res.setHeader(
     "Content-Type",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
   );
   res.setHeader("Content-Disposition", "attachment; filename=sample-leads.xlsx");
-  res.download(sampleFilePath);
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("Surrogate-Control", "no-store");
+  res.send(fileBuffer);
 });
 
 const normalizeImportedLead = (row) => {
   const email = normalizeEmail(row.email);
   const mobile = normalizePhone(row.mobileNo || row.mobile || row.phone);
-  const city = cleanString(row.city);
-  const state = getMappedStateForCity(city) || cleanString(row.state);
+  const city = cleanString(row.city || row.__empty_7 || row.__empty_8);
+  const state = cleanString(row.state || row.__empty_9 || row.__empty_10);
 
   return {
     name: cleanString(row.name),
@@ -452,6 +568,19 @@ const normalizeImportedLead = (row) => {
     priorityRating: row.priorityRating || undefined,
     leadSource: row.leadSource || undefined,
     leadStatus: row.leadStatus || "Not Contacted",
+    senderEmail: normalizeEmail(row.senderEmail),
+    emailVerifiedStatus: cleanString(row.emailVerifiedStatus),
+    wifi: cleanString(row.wifi),
+    browser: cleanString(row.browser),
+    emailSentOn: row.emailSentOn ? new Date(row.emailSentOn) : undefined,
+    emailTemplate: cleanString(row.emailTemplate),
+    emailSubjectCode: cleanString(row.emailSubjectCode),
+    emailSeen: cleanString(row.emailSeen),
+    emailStatus: cleanString(row.emailStatus),
+    enquiryStatus: cleanString(row.enquiryStatus),
+    turnup: cleanString(row.turnup),
+    cdcrNo: cleanString(row.cdcrNo),
+    cdcrCreation: row.cdcrCreation ? new Date(row.cdcrCreation) : undefined,
     description: row.description || "",
     notes: row.notes || "",
     metadata: row,
@@ -473,7 +602,7 @@ const importLeads = asyncHandler(async (req, res) => {
     throw new Error("No sheet found in file");
   }
 
-  const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+  const rows = mapSheetRowsByHeaders(sheet, LEAD_IMPORT_HEADER_MAP);
   if (!rows.length) {
     fs.unlink(req.file.path, () => {});
     res.status(400);
@@ -499,6 +628,7 @@ const importLeads = asyncHandler(async (req, res) => {
 
   const operations = [];
   const skippedRows = [];
+  const pendingInsertIndexes = [];
 
   for (let index = 0; index < rows.length; index += 1) {
     const lead = normalizeImportedLead(rows[index]);
@@ -518,13 +648,6 @@ const importLeads = asyncHandler(async (req, res) => {
     }
 
     const existingId = emailMap.get(lead.normalizedEmail) || mobileMap.get(lead.normalizedMobileNo);
-    if (!existingId && !lead.normalizedEmail && !lead.normalizedMobileNo) {
-      skippedRows.push({
-        rowNumber: index + 2,
-        reason: "either email or mobileNo is required for import deduplication",
-      });
-      continue;
-    }
 
     if (existingId) {
       operations.push({
@@ -542,12 +665,11 @@ const importLeads = asyncHandler(async (req, res) => {
       continue;
     }
 
-    const nextId = await nextSequence("leadId", "LEAD");
     operations.push({
       insertOne: {
         document: {
           ...lead,
-          idNo: nextId,
+          idNo: "",
           idDate: new Date(),
           createdBy: req.user?.id || null,
           updatedBy: req.user?.id || null,
@@ -555,6 +677,7 @@ const importLeads = asyncHandler(async (req, res) => {
         },
       },
     });
+    pendingInsertIndexes.push(operations.length - 1);
 
     if (lead.normalizedEmail) {
       pendingKeys.add(lead.normalizedEmail);
@@ -564,9 +687,34 @@ const importLeads = asyncHandler(async (req, res) => {
     }
   }
 
+  if (pendingInsertIndexes.length) {
+    const counter = await Counter.findOneAndUpdate(
+      { name: "leadId" },
+      { $inc: { value: pendingInsertIndexes.length } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    const startValue = counter.value - pendingInsertIndexes.length + 1;
+    pendingInsertIndexes.forEach((operationIndex, rangeIndex) => {
+      operations[operationIndex].insertOne.document.idNo = `LEAD-${String(startValue + rangeIndex).padStart(6, "0")}`;
+    });
+  }
+
   if (operations.length) {
     await Lead.bulkWrite(operations, { ordered: false });
   }
+
+  const syncedLeads = await Lead.find(
+    {
+      isDeleted: false,
+      $or: [
+        { normalizedEmail: { $in: rows.map((row) => normalizeEmail(row.email)).filter(Boolean) } },
+        { normalizedMobileNo: { $in: rows.map((row) => normalizePhone(row.mobileNo || row.mobile || row.phone)).filter(Boolean) } },
+      ],
+    }
+  ).lean();
+
+  await syncLeadsToMailBulk(syncedLeads, req.user?.id);
 
   fs.unlink(req.file.path, () => {});
 
@@ -585,6 +733,11 @@ const bulkDeleteLeads = asyncHandler(async (req, res) => {
     { $set: { isDeleted: true, deletedAt: new Date(), updatedBy: req.user?.id || null } }
   );
 
+  const deletedLeads = await Lead.find({ _id: { $in: req.body.ids } }).lean();
+  for (const lead of deletedLeads) {
+    await syncLeadDeletionToMail(lead, req.user?.id);
+  }
+
   res.json({
     success: true,
     message: `${result.modifiedCount} lead(s) deleted`,
@@ -602,6 +755,11 @@ const bulkUpdateStatus = asyncHandler(async (req, res) => {
     { _id: { $in: req.body.ids }, isDeleted: false },
     { $set: { leadStatus: status, updatedBy: req.user?.id || null } }
   );
+
+  const updatedLeads = await Lead.find({ _id: { $in: req.body.ids }, isDeleted: false }).lean();
+  for (const lead of updatedLeads) {
+    await syncLeadStatusToMail(lead, req.user?.id);
+  }
 
   res.json({
     success: true,

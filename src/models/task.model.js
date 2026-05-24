@@ -24,51 +24,82 @@ const commentSchema = new mongoose.Schema({
 
 const STATUS_TRANSITIONS = {
   "Request Initiated": [
-    "Application Drafting in Progress"
+    "Quote to be Sent",
+    "Strike Off",
+  ],
+  "Quote to be Sent": [
+    "Quote Approval Pending",
+    "Strike Off",
+  ],
+  "Quote Approval Pending": [
+    "Quote Approved",
+    "Strike Off",
+  ],
+  "Quote Approved": [
+    "Application Drafting in Progress",
+    "Strike Off",
   ],
   "Application Drafting in Progress": [
-    "Draft Sent for Approval"
+    "Draft Sent for Approval",
+    "Strike Off",
   ],
   "Draft Sent for Approval": [
     "Draft Approved",
-    "Deficiency Raised"
+    "Deficiency Raised",
+    "Strike Off",
   ],
   "Draft Approved": [
-    "Submission"
+    "Submission",
+    "Strike Off",
   ],
   "Submission": [
     "Official Fees Paid",
-    "Deficiency Raised"
+    "Deficiency Raised",
+    "Strike Off",
   ],
   "Official Fees Paid": [
-    "In Process"
+    "In Process",
+    "Strike Off",
   ],
   "In Process": [
     "Approved",
-    "Deficiency Raised"
+    "Deficiency Raised",
+    "Strike Off",
   ],
   "Deficiency Raised": [
-    "Deficiency Query Reply Awaited from Client"
+    "Deficiency Query Reply Awaited from Client",
+    "Strike Off",
   ],
   "Deficiency Query Reply Awaited from Client": [
-    "Deficiency Replied"
+    "Deficiency Replied",
+    "Strike Off",
   ],
   "Deficiency Replied": [
-    "In Process"
+    "In Process",
+    "Strike Off",
   ],
   "Approved": [
-    "Pending for Invoicing"
+    "Pending for Invoicing",
+    "Strike Off",
   ],
   "Pending for Invoicing": [
-    "Invoice Raised"
+    "Invoice Raised",
+    "Strike Off",
   ],
   "Invoice Raised": [
-    "Invoice Paid"
-  ]
+    "Invoice Paid",
+    "Strike Off",
+  ],
+  "Invoice Paid": [
+    "Strike Off",
+  ],
 };
 
 const TASK_STATUSES = [
   "Request Initiated",
+  "Quote to be Sent",
+  "Quote Approval Pending",
+  "Quote Approved",
   "Application Drafting in Progress",
   "Draft Sent for Approval",
   "Draft Approved",
@@ -81,8 +112,12 @@ const TASK_STATUSES = [
   "Approved",
   "Pending for Invoicing",
   "Invoice Raised",
-  "Invoice Paid"
+  "Invoice Paid",
+  "Strike Off",
 ];
+
+const WORK_LEVELS = ["High Risk", "Pendency", "Important"];
+const JOB_WORK_STATUSES = ["Active", "Completed", "Strike Off"];
 
 const taskSchema = new mongoose.Schema(
   {
@@ -106,6 +141,16 @@ const taskSchema = new mongoose.Schema(
     assignedToUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     assignedToName: String,
     assignedToEmail: String,
+    workLevel: {
+      type: String,
+      enum: [...WORK_LEVELS, ""],
+      default: "",
+    },
+    jobWorkStatus: {
+      type: String,
+      enum: JOB_WORK_STATUSES,
+      default: "Active",
+    },
 
     // SLA
     slaDays: Number,
@@ -116,6 +161,13 @@ const taskSchema = new mongoose.Schema(
     emailDate: Date,
 
     details: String,
+    quotation: {
+      type: String,
+      enum: ["Via WhatsApp", "Email", "Agreed", ""],
+      default: "",
+    },
+    officialFee: { type: Number, default: null },
+    serviceCharges: { type: Number, default: null },
 
     // Workflow
     status: {
@@ -143,3 +195,5 @@ const Task = mongoose.model("Task", taskSchema);
 module.exports = Task;
 module.exports.STATUS_TRANSITIONS = STATUS_TRANSITIONS;
 module.exports.TASK_STATUSES = TASK_STATUSES;
+module.exports.WORK_LEVELS = WORK_LEVELS;
+module.exports.JOB_WORK_STATUSES = JOB_WORK_STATUSES;

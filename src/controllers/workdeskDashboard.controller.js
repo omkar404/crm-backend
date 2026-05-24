@@ -1,5 +1,31 @@
 const Task = require("../models/task.model.js");
 
+const getStageTracking = async (baseMatch, status) => {
+    const [rows, counts] = await Promise.all([
+        Task.find({ ...baseMatch, status })
+            .sort({ updatedAt: -1, createdAt: -1 })
+            .select(
+                "serviceRequestId clientName clientDisplayId clientSource chaName serviceType subType assignedToName assignedToEmail"
+            )
+            .lean(),
+        Task.aggregate([
+            { $match: { ...baseMatch, status } },
+            {
+                $group: {
+                    _id: "$assignedToName",
+                    count: { $sum: 1 }
+                }
+            }
+        ])
+    ]);
+
+    const countMap = new Map(counts.map((item) => [item._id || "", item.count]));
+    return rows.map((row) => ({
+        ...row,
+        handledCount: countMap.get(row.assignedToName || "") || 0
+    }));
+};
+
 const getWorkdeskDashboardAnalytics = async (req, res) => {
     try {
         const user = req.user;
@@ -29,6 +55,9 @@ const getWorkdeskDashboardAnalytics = async (req, res) => {
             critical,
             staffLoad,
             staffReadyInvoice,
+            pendingForInvoicingRows,
+            invoiceRaisedRows,
+            invoicePaidRows,
             overdue,
             pending
         ] = await Promise.all([
@@ -73,6 +102,9 @@ const getWorkdeskDashboardAnalytics = async (req, res) => {
                     }
                 }
             ]),
+            getStageTracking(baseMatch, "Pending for Invoicing"),
+            getStageTracking(baseMatch, "Invoice Raised"),
+            getStageTracking(baseMatch, "Invoice Paid"),
             Task.countDocuments({
                 ...baseMatch,
                 slaBreached: true,
@@ -91,10 +123,18 @@ const getWorkdeskDashboardAnalytics = async (req, res) => {
                 summary: {
                     totalActive,
                     completed,
-                    critical
+                    critical,
+                    totalPendingForInvoicing: pendingForInvoicingRows.length,
+                    totalInvoiceRaised: invoiceRaisedRows.length,
+                    totalInvoicePaid: invoicePaidRows.length
                 },
                 staffLoad,
                 staffReadyInvoice,
+                invoiceTracking: {
+                    pendingForInvoicing: pendingForInvoicingRows,
+                    invoiceRaised: invoiceRaisedRows,
+                    invoicePaid: invoicePaidRows
+                },
                 risk: {
                     overdue,
                     pending

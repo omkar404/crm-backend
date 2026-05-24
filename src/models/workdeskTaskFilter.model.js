@@ -30,11 +30,19 @@ const workdeskTaskSchema = new mongoose.Schema(
     },
 
     assignedToName: String,
+    jobWorkStatus: {
+      type: String,
+      enum: ["Active", "Completed", "Strike Off"],
+      default: "Active"
+    },
 
     status: {
       type: String,
       enum: [
         "Request Initiated",
+        "Quote to be Sent",
+        "Quote Approval Pending",
+        "Quote Approved",
         "Application Drafting in Progress",
         "Draft Sent for Approval",
         "Draft Approved",
@@ -47,7 +55,8 @@ const workdeskTaskSchema = new mongoose.Schema(
         "Approved",
         "Pending for Invoicing",
         "Invoice Raised",
-        "Invoice Paid"
+        "Invoice Paid",
+        "Strike Off"
       ],
       default: "Request Initiated"
     },

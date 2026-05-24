@@ -1,5 +1,4 @@
 const Task = require("../models/task.model.js");
-
 const filterWorkdeskFilterTasks = async (req, res) => {
   try {
     const {
@@ -57,7 +56,7 @@ const filterWorkdeskFilterTasks = async (req, res) => {
 
     /* ================= ROLE RESTRICTION ================= */
 
-    if (user.role === "STAFF") {
+    if (user.role !== "ADMIN") {
       query.assignedToUserId = user.id;
     }
 

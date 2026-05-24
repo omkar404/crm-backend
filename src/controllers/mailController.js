@@ -5,7 +5,6 @@ const {
   MAIL_EXCEL_HEADERS,
   MAIL_REFERENCE_FILTERS,
 } = require("../constants/mailExcel");
-const { getMappedStateForCity } = require("../constants/locationOptions");
 const { asyncHandler } = require("../utils/asyncHandler");
 const {
   buildAttachmentMeta,
@@ -19,6 +18,7 @@ const {
   parsePositiveInt,
   toBoolean,
 } = require("../utils/crm");
+const { syncMailToLead } = require("../utils/leadMailSync");
 const XLSX = require("xlsx");
 
 const normalizeMailStatus = (value) => {
@@ -59,6 +59,9 @@ const denormalizeMailStatus = (value) => {
 const mergeReferenceOptions = (values = [], fallback = []) =>
   [...new Set([...values.filter(Boolean), ...fallback.filter(Boolean)])];
 
+const mergePreferredReferenceOptions = (values = [], fallback = []) =>
+  [...new Set([...fallback.filter(Boolean), ...values.filter(Boolean)])];
+
 const mergeCaseInsensitiveOptions = (values = [], fallback = []) => {
   const canonical = new Map();
 
@@ -87,6 +90,110 @@ const canonicalizeReferenceValue = (value, fallback = []) => {
   return matched || cleaned;
 };
 
+const normalizeImportHeader = (value) =>
+  cleanString(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+
+const createHeaderAliasMap = (aliases) => {
+  const map = new Map();
+  Object.entries(aliases).forEach(([field, values]) => {
+    values.forEach((value) => {
+      map.set(normalizeImportHeader(value), field);
+    });
+  });
+  return map;
+};
+
+const MAIL_IMPORT_HEADER_MAP = createHeaderAliasMap({
+  name: ["name", "client name", "name of client", "company name"],
+  iecChaNo: ["iecchano", "iec cha no", "iec/cha no"],
+  landlineNo: ["landlineno", "landline no", "landline number", "telephone"],
+  mobileNo: ["mobileno", "mobile no", "mobile", "mobile number", "phone", "phone number", "contact mobile"],
+  email: ["email", "email address", "client email", "email id"],
+  templateName: ["template", "email template"],
+  subject: ["subject", "email subject"],
+  sourceDate: ["date", "source date", "email sent on"],
+  ipAddress: ["ip address"],
+  webSource: ["web", "web source"],
+  verifyEmail: ["verify email"],
+  city: ["city"],
+  senderEmail: ["email sent", "sender email", "from", "from email", "email id"],
+  status: ["status"],
+  state: ["state"],
+  pinCode: ["pincode", "pin code", "zipcode", "zip code", "postal code"],
+  contactPerson: ["contactperson", "contact person", "primary contact"],
+  designation: ["designation", "role"],
+  employees: ["employees", "employee count", "staff count"],
+  turnover: ["turnover"],
+  startupCategory: ["startupcategory", "startup category"],
+  AEOStatus: ["aeostatus", "aeo status"],
+  RCMCPanel: ["rcmcpanel", "rcmc panel"],
+  RCMCType: ["rcmctype", "rcmc type"],
+  industry: ["industry"],
+  industryBrief: ["industrybrief", "industry brief"],
+  leadType: ["leadtype", "lead type"],
+  priorityRating: ["priorityrating", "priority rating", "priority"],
+  leadSource: ["leadsource", "lead source"],
+  leadStatus: ["leadstatus", "lead status"],
+  emailVerifiedStatus: ["emailverifiedstatus", "email verified status", "email verified"],
+  wifi: ["wifi"],
+  browser: ["browser"],
+  emailSentOn: ["emailsenton", "email sent on"],
+  emailTemplate: ["emailtemplate", "email template"],
+  emailSubjectCode: ["emailsubjectcode", "email subject code", "email subject"],
+  emailSeen: ["emailseen", "email seen"],
+  emailStatus: ["emailstatus", "email status"],
+  enquiryStatus: ["enquirystatus", "enquiry status"],
+  turnup: ["turnup", "turn up"],
+  cdcrNo: ["cdcrno", "cdcr no", "cdcr number", "cdcr"],
+  cdcrCreation: ["cdcrcreation", "cdcr creation", "cdcr creation date"],
+  description: ["description"],
+  notes: ["notes", "note"],
+});
+
+const mapMailSheetRowsByHeaders = (sheet) => {
+  const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+  if (!matrix.length) {
+    return [];
+  }
+
+  const rawHeaders = matrix[0] || [];
+  const normalizedHeaders = rawHeaders.map((header) => normalizeImportHeader(header));
+
+  const mappedHeaders = rawHeaders.map((header, index) => {
+    const normalized = normalizedHeaders[index];
+
+    if (normalized === "emailid") {
+      const hasCompanyEmailHeader = normalizedHeaders.includes("email");
+      const hasSenderHeader = normalizedHeaders.some((item) =>
+        ["emailsent", "senderemail", "from", "fromemail"].includes(item)
+      );
+
+      if (hasCompanyEmailHeader && !hasSenderHeader) {
+        return "from";
+      }
+
+      if (hasSenderHeader) {
+        return "email";
+      }
+    }
+
+    return MAIL_IMPORT_HEADER_MAP.get(normalized) || cleanString(header);
+  });
+
+  return matrix
+    .slice(1)
+    .filter((row) => row.some((value) => cleanString(value) !== ""))
+    .map((row) => {
+      const mappedRow = {};
+      mappedHeaders.forEach((key, index) => {
+        mappedRow[key || `__empty_${index}`] = row[index];
+      });
+      return mappedRow;
+    });
+};
+
 const normalizeStringList = (value) => {
   if (Array.isArray(value)) {
     return value.map((item) => cleanString(item)).filter(Boolean);
@@ -102,38 +209,90 @@ const normalizeStringList = (value) => {
   return [];
 };
 
+const resolveMailSender = (source = {}, fallback = {}) =>
+  normalizeEmail(
+    source.from ??
+      source.senderEmail ??
+      source.emailId ??
+      source.emailID ??
+      source["Email Id"] ??
+      source["Email ID"] ??
+      source.sender ??
+      source.From ??
+      fallback.from ??
+      fallback.emailId
+  );
+
+const resolveEmailSentValue = (source = {}, fallback) => {
+  const value =
+    source.emailSent ??
+    source.emailSentValue ??
+    source["Email sent"] ??
+    source["Email Sent"] ??
+    source.email_sent ??
+    fallback;
+
+  return toBoolean(value);
+};
+
 const exactMailFilterOptions = async () => {
   const baseFilter = { isDeleted: false };
   const [
-    sendEmailId,
+    leadSource,
+    senderEmail,
+    fromEmail,
     templateType,
     templateSubject,
+    sourceDate,
     ipAddress,
     webTabAndType,
     emailVerifiedBoolean,
+    emailVerifiedStatus,
     verifyEmailRaw,
-    emailSentType,
+    emailSeen,
+    openedMailIds,
+    emailStatus,
     status,
-    city,
-    state,
-    sourceDate,
+    enquiryStatus,
+    turnup,
+    cdcrNo,
   ] = await Promise.all([
+    Mail.distinct("leadSource", baseFilter),
+    Mail.distinct("senderEmail", baseFilter),
     Mail.distinct("from", baseFilter),
     Mail.distinct("templateName", baseFilter),
     Mail.distinct("subject", baseFilter),
+    Mail.distinct("sourceDate", baseFilter),
     Mail.distinct("ipAddress", baseFilter),
     Mail.distinct("webSource", baseFilter),
     Mail.distinct("emailVerified", baseFilter),
+    Mail.distinct("emailVerifiedStatus", baseFilter),
     Mail.distinct("verifyEmail", baseFilter),
-    Mail.distinct("emailSent", baseFilter),
+    Mail.distinct("emailSeen", baseFilter),
+    Mail.distinct("_id", { ...baseFilter, lastOpenedAt: { $ne: null } }),
+    Mail.distinct("emailStatus", baseFilter),
     Mail.distinct("status", baseFilter),
-    Mail.distinct("city", baseFilter),
-    Mail.distinct("state", baseFilter),
-    Mail.distinct("sourceDate", baseFilter),
+    Mail.distinct("enquiryStatus", baseFilter),
+    Mail.distinct("turnup", baseFilter),
+    Mail.distinct("cdcrNo", baseFilter),
   ]);
 
   return {
-    sendEmailId: mergeReferenceOptions(sendEmailId.filter(Boolean), MAIL_REFERENCE_FILTERS.sendEmailId),
+    leadSource: leadSource.filter(Boolean),
+    emailId: mergePreferredReferenceOptions(
+      mergeCaseInsensitiveOptions(
+        [...senderEmail.filter(Boolean), ...fromEmail.filter(Boolean)],
+        []
+      ),
+      MAIL_REFERENCE_FILTERS.sendEmailId
+    ),
+    sendEmailId: mergePreferredReferenceOptions(
+      mergeCaseInsensitiveOptions(
+        [...senderEmail.filter(Boolean), ...fromEmail.filter(Boolean)],
+        []
+      ),
+      MAIL_REFERENCE_FILTERS.sendEmailId
+    ),
     templateType: mergeReferenceOptions(templateType, MAIL_REFERENCE_FILTERS.templateType),
     templateSubject: templateSubject.filter(Boolean),
     emailDate: sourceDate.filter(Boolean).map((value) => new Date(value).toISOString().slice(0, 10)),
@@ -142,17 +301,31 @@ const exactMailFilterOptions = async () => {
     emailVerified: mergeReferenceOptions(
       [
         ...emailVerifiedBoolean.filter(Boolean).map((value) => (value ? "Yes" : "No")),
+        ...emailVerifiedStatus.filter(Boolean),
         ...verifyEmailRaw.filter(Boolean),
       ],
       MAIL_REFERENCE_FILTERS.emailVerified
     ),
-    emailSentType: mergeReferenceOptions(
-      emailSentType.map((value) => (value ? "Yes" : "No")),
-      MAIL_REFERENCE_FILTERS.emailSentType
+    emailSent: [...MAIL_REFERENCE_FILTERS.emailSentType],
+    emailSentType: [...MAIL_REFERENCE_FILTERS.emailSentType],
+    emailSeen: mergeReferenceOptions(
+      [
+        ...emailSeen.filter(Boolean),
+        ...(openedMailIds.length ? ["Yes"] : []),
+      ],
+      ["Yes", "No"]
+    ),
+    emailStatus: mergeReferenceOptions(
+      [
+        ...emailStatus.filter(Boolean),
+        ...status.filter(Boolean).map(denormalizeMailStatus),
+      ],
+      ["Active", "Stop", "Enquiry - Call", "Enquiry - Mail", "Enquiry - WhatsApp"]
     ),
     status: mergeReferenceOptions(status.filter(Boolean).map(denormalizeMailStatus), MAIL_REFERENCE_FILTERS.status),
-    city: city.filter(Boolean),
-    state: state.filter(Boolean),
+    enquiryStatus: enquiryStatus.filter(Boolean),
+    turnup: turnup.filter(Boolean),
+    cdcrNo: cdcrNo.filter(Boolean),
   };
 };
 
@@ -164,23 +337,27 @@ const buildMailPayload = (req, existing = {}) => {
   const attachments =
     preserveAttachments === false ? incomingAttachments : [...existingAttachments, ...incomingAttachments];
 
-  const sender = normalizeEmail(body.from || body["Email Id"] || existing.from);
+  const sender = resolveMailSender(body, existing);
   const companyEmail = normalizeEmail(body.email ?? existing.email);
   const sourceDateValue = body.sourceDate || body.Date || existing.sourceDate;
   const city = cleanString(body.city ?? existing.city);
   const incomingState = cleanString(body.state ?? existing.state);
-  const mappedState = getMappedStateForCity(city);
 
   const payload = {
     name: cleanString(body.name ?? existing.name),
+    iecChaNo: cleanString(body.iecChaNo ?? existing.iecChaNo),
+    landlineNo: cleanString(body.landlineNo ?? existing.landlineNo),
+    mobileNo: cleanString(body.mobileNo ?? existing.mobileNo),
     from: sender,
     subject: cleanString(body.subject ?? body.Subject ?? existing.subject),
     status: normalizeMailStatus(body.status ?? body.Status) || existing.status || "draft",
     templateName: cleanString(body.templateName ?? body.Template ?? existing.templateName),
     email: companyEmail,
     verifyEmail: cleanString(body.verifyEmail ?? body["verify email"] ?? existing.verifyEmail),
+    website: cleanString(body.website ?? existing.website),
+    address: cleanString(body.address ?? existing.address),
     city,
-    state: mappedState || incomingState,
+    state: incomingState,
     ipAddress: canonicalizeReferenceValue(
       body.ipAddress ?? body["IP Address"] ?? existing.ipAddress,
       MAIL_REFERENCE_FILTERS.ipAddress
@@ -205,6 +382,17 @@ const buildMailPayload = (req, existing = {}) => {
     priorityRating: cleanString(body.priorityRating ?? existing.priorityRating),
     leadSource: cleanString(body.leadSource ?? existing.leadSource),
     leadStatus: cleanString(body.leadStatus ?? existing.leadStatus),
+    senderEmail: normalizeEmail(body.senderEmail ?? existing.senderEmail ?? sender),
+    emailVerifiedStatus: cleanString(body.emailVerifiedStatus ?? existing.emailVerifiedStatus),
+    wifi: cleanString(body.wifi ?? existing.wifi),
+    browser: cleanString(body.browser ?? existing.browser),
+    emailTemplate: cleanString(body.emailTemplate ?? body.templateName ?? body.Template ?? existing.emailTemplate ?? existing.templateName),
+    emailSubjectCode: cleanString(body.emailSubjectCode ?? existing.emailSubjectCode),
+    emailSeen: cleanString(body.emailSeen ?? existing.emailSeen),
+    emailStatus: cleanString(body.emailStatus ?? existing.emailStatus),
+    enquiryStatus: cleanString(body.enquiryStatus ?? existing.enquiryStatus),
+    turnup: cleanString(body.turnup ?? existing.turnup),
+    cdcrNo: cleanString(body.cdcrNo ?? existing.cdcrNo),
     description: body.description ?? existing.description ?? "",
     notes: body.notes ?? existing.notes ?? "",
     attachments,
@@ -218,7 +406,7 @@ const buildMailPayload = (req, existing = {}) => {
     payload.emailVerified = existing.emailVerified;
   }
 
-  const emailSent = toBoolean(body.emailSent ?? body["Email sent"]);
+  const emailSent = resolveEmailSentValue(body, existing.emailSent);
   if (emailSent !== undefined) {
     payload.emailSent = emailSent;
   } else if (existing.emailSent !== undefined) {
@@ -229,6 +417,15 @@ const buildMailPayload = (req, existing = {}) => {
     const sourceDate = new Date(sourceDateValue);
     if (!Number.isNaN(sourceDate.getTime())) {
       payload.sourceDate = sourceDate;
+      payload.emailSentOn = sourceDate;
+    }
+  }
+
+  const cdcrCreationValue = body.cdcrCreation || existing.cdcrCreation;
+  if (cdcrCreationValue) {
+    const cdcrCreation = new Date(cdcrCreationValue);
+    if (!Number.isNaN(cdcrCreation.getTime())) {
+      payload.cdcrCreation = cdcrCreation;
     }
   }
 
@@ -251,12 +448,14 @@ const buildMailPayload = (req, existing = {}) => {
 
 const mapMailResponse = (mail) => ({
   ...mail,
+  emailId: mail.from || "",
   "Sr No": mail.metadata?.["Sr No"] || "",
   name: mail.name || "",
   iecChaNo: mail.iecChaNo || "",
   landlineNo: mail.landlineNo || "",
   mobileNo: mail.mobileNo || "",
   "Email Id": mail.from,
+  senderEmail: mail.senderEmail || "",
   Template: mail.templateName,
   Subject: mail.subject,
   Date: mail.sourceDate,
@@ -284,6 +483,18 @@ const mapMailResponse = (mail) => ({
   priorityRating: mail.priorityRating || "",
   leadSource: mail.leadSource || "",
   leadStatus: mail.leadStatus || "",
+  emailVerifiedStatus: mail.emailVerifiedStatus || "",
+  wifi: mail.wifi || "",
+  browser: mail.browser || "",
+  emailSentOn: mail.emailSentOn || mail.sourceDate || "",
+  emailTemplate: mail.emailTemplate || mail.templateName || "",
+  emailSubjectCode: mail.emailSubjectCode || "",
+  emailSeen: mail.emailSeen || (mail.lastOpenedAt ? "Yes" : ""),
+  emailStatus: mail.emailStatus || denormalizeMailStatus(mail.status),
+  enquiryStatus: mail.enquiryStatus || "",
+  turnup: mail.turnup || "",
+  cdcrNo: mail.cdcrNo || "",
+  cdcrCreation: mail.cdcrCreation || "",
   description: mail.description || "",
   notes: mail.notes || "",
 });
@@ -302,24 +513,66 @@ const buildMailQuery = (query) => {
   }
 
   const exactMappings = {
+    emailId: "from",
+    leadSource: "leadSource",
     templateType: "templateName",
     templateSubject: "subject",
     ipAddress: "ipAddress",
     webTabAndType: "webSource",
     city: "city",
     state: "state",
+    emailStatus: "emailStatus",
+    enquiryStatus: "enquiryStatus",
+    turnup: "turnup",
+    cdcrNo: "cdcrNo",
   };
 
-  const sendEmailIds = normalizeStringList(query.sendEmailId);
-  if (sendEmailIds.length === 1) {
-    filter.from = { $regex: `^${escapeRegex(sendEmailIds[0])}$`, $options: "i" };
-  } else if (sendEmailIds.length > 1) {
+  const legacyEmailSentSenderFilter =
+    cleanString(query.emailSent) && toBoolean(query.emailSent) === undefined ? query.emailSent : undefined;
+  const sendEmailIds = normalizeStringList(query.emailId || query.sendEmailId || legacyEmailSentSenderFilter);
+  const blankSelected = sendEmailIds.some((value) => cleanString(value).toLowerCase() === "blank");
+  const actualSendEmailIds = sendEmailIds.filter((value) => cleanString(value).toLowerCase() !== "blank");
+
+  if (actualSendEmailIds.length === 1 || blankSelected) {
+    const orConditions = [];
+
+    if (actualSendEmailIds.length === 1) {
+      orConditions.push(
+        { from: { $regex: `^${escapeRegex(actualSendEmailIds[0])}$`, $options: "i" } },
+        { senderEmail: { $regex: `^${escapeRegex(actualSendEmailIds[0])}$`, $options: "i" } }
+      );
+    }
+
+    if (blankSelected) {
+      orConditions.push(
+        { from: { $in: ["", null] } },
+        { senderEmail: { $in: ["", null] } }
+      );
+    }
+
     filter.$and = [
       ...(filter.$and || []),
       {
-        $or: sendEmailIds.map((value) => ({
-          from: { $regex: `^${escapeRegex(value)}$`, $options: "i" },
-        })),
+        $or: orConditions,
+      },
+    ];
+  } else if (actualSendEmailIds.length > 1) {
+    const orConditions = actualSendEmailIds.flatMap((value) => ([
+      { from: { $regex: `^${escapeRegex(value)}$`, $options: "i" } },
+      { senderEmail: { $regex: `^${escapeRegex(value)}$`, $options: "i" } },
+    ]));
+
+    if (blankSelected) {
+      orConditions.push(
+        { from: { $in: ["", null] } },
+        { senderEmail: { $in: ["", null] } }
+      );
+    }
+
+    filter.$and = [
+      ...(filter.$and || []),
+      {
+        $or: orConditions,
       },
     ];
   }
@@ -334,14 +587,81 @@ const buildMailQuery = (query) => {
     const rawValue = cleanString(query.emailVerified);
     const boolValue = toBoolean(rawValue);
     if (boolValue !== undefined) {
-      filter.emailVerified = boolValue;
+      filter.$and = [
+        ...(filter.$and || []),
+        {
+          $or: [
+            { emailVerified: boolValue },
+            { emailVerifiedStatus: { $regex: `^${escapeRegex(rawValue)}$`, $options: "i" } },
+            { verifyEmail: { $regex: `^${escapeRegex(rawValue)}$`, $options: "i" } },
+          ],
+        },
+      ];
     } else {
-      filter.verifyEmail = { $regex: `^${escapeRegex(rawValue)}$`, $options: "i" };
+      filter.$and = [
+        ...(filter.$and || []),
+        {
+          $or: [
+            { emailVerifiedStatus: { $regex: `^${escapeRegex(rawValue)}$`, $options: "i" } },
+            { verifyEmail: { $regex: `^${escapeRegex(rawValue)}$`, $options: "i" } },
+          ],
+        },
+      ];
     }
   }
 
-  if (cleanString(query.emailSentType)) {
-    const boolValue = toBoolean(query.emailSentType);
+  if (cleanString(query.emailSeen)) {
+    const rawValue = cleanString(query.emailSeen);
+    const boolValue = toBoolean(rawValue);
+    if (boolValue === true) {
+      filter.$and = [
+        ...(filter.$and || []),
+        {
+          $or: [
+            { emailSeen: { $regex: "^Yes$", $options: "i" } },
+            { lastOpenedAt: { $ne: null } },
+          ],
+        },
+      ];
+    } else if (boolValue === false) {
+      filter.$and = [
+        ...(filter.$and || []),
+        {
+          $or: [
+            { emailSeen: { $regex: "^No$", $options: "i" } },
+            {
+              $and: [
+                {
+                  $or: [
+                    { emailSeen: { $exists: false } },
+                    { emailSeen: "" },
+                    { emailSeen: null },
+                  ],
+                },
+                {
+                  $or: [
+                    { lastOpenedAt: { $exists: false } },
+                    { lastOpenedAt: null },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ];
+    } else {
+      filter.emailSeen = { $regex: `^${escapeRegex(rawValue)}$`, $options: "i" };
+    }
+  }
+
+  const emailSentFilterValue = cleanString(query.emailSentType)
+    ? query.emailSentType
+    : cleanString(query.emailSent) && toBoolean(query.emailSent) !== undefined
+      ? query.emailSent
+      : undefined;
+
+  if (emailSentFilterValue !== undefined) {
+    const boolValue = toBoolean(emailSentFilterValue);
     if (boolValue !== undefined) {
       filter.emailSent = boolValue;
     }
@@ -448,6 +768,7 @@ const createMail = asyncHandler(async (req, res) => {
   payload.updatedBy = req.user?.id || null;
 
   const mail = await Mail.create(payload);
+  await syncMailToLead(mail.toObject(), req.user?.id);
   res.status(201).json({ success: true, data: mapMailResponse(mail.toObject()) });
 });
 
@@ -463,6 +784,7 @@ const updateMail = asyncHandler(async (req, res) => {
 
   Object.assign(existing, payload);
   await existing.save();
+  await syncMailToLead(existing.toObject(), req.user?.id);
 
   res.json({ success: true, data: mapMailResponse(existing.toObject()) });
 });
@@ -489,6 +811,8 @@ const updateMailStatus = asyncHandler(async (req, res) => {
     res.status(404);
     throw new Error("Mail not found");
   }
+
+  await syncMailToLead(mail, req.user?.id);
 
   res.json({ success: true, data: mapMailResponse(mail) });
 });
@@ -523,6 +847,11 @@ const bulkUpdateMailStatus = asyncHandler(async (req, res) => {
     { _id: { $in: req.body.ids }, isDeleted: false },
     { $set: update }
   );
+
+  const updatedMails = await Mail.find({ _id: { $in: req.body.ids }, isDeleted: false }).lean();
+  for (const mail of updatedMails) {
+    await syncMailToLead(mail, req.user?.id);
+  }
 
   res.json({
     success: true,
@@ -583,6 +912,7 @@ const sendMailRecord = asyncHandler(async (req, res) => {
 
   mail.updatedBy = req.user?.id || null;
   await mail.save();
+  await syncMailToLead(mail.toObject(), req.user?.id);
 
   res.json({
     success: true,
@@ -625,23 +955,29 @@ const downloadMailSample = asyncHandler(async (req, res) => {
 });
 
 const normalizeImportedMail = (row) => {
-  const sender = normalizeEmail(row["Email Id"] || row.from || row.sender || row["From"]);
+  const sender = resolveMailSender(row);
   const companyEmail = normalizeEmail(row.email);
-  const emailSent = toBoolean(row["Email sent"] ?? row.emailSent);
+  const emailSent = resolveEmailSentValue(row);
   const sourceDate = row.Date || row.sourceDate || row.date;
   const normalizedStatus = normalizeMailStatus(row.Status || row.status);
   const verifyEmail = cleanString(row["verify email"] || row.verifyEmail);
-  const city = cleanString(row.city);
-  const state = getMappedStateForCity(city) || cleanString(row.state);
+  const city = cleanString(row.city || row.__empty_7 || row.__empty_8);
+  const state = cleanString(row.state || row.__empty_9 || row.__empty_10);
 
   return {
     name: cleanString(row.name),
+    iecChaNo: cleanString(row.iecChaNo),
+    landlineNo: cleanString(row.landlineNo),
+    mobileNo: cleanString(row.mobileNo),
     from: sender,
+    emailId: sender,
     subject: cleanString(row.Subject || row.subject),
     status: normalizedStatus || (emailSent ? "sent" : "draft"),
     templateName: cleanString(row.Template || row.templateName),
     email: companyEmail,
     verifyEmail,
+    website: cleanString(row.website),
+    address: cleanString(row.address),
     city,
     state,
     ipAddress: canonicalizeReferenceValue(
@@ -670,6 +1006,22 @@ const normalizeImportedMail = (row) => {
     priorityRating: cleanString(row.priorityRating),
     leadSource: cleanString(row.leadSource),
     leadStatus: cleanString(row.leadStatus),
+    senderEmail: sender,
+    emailVerifiedStatus: cleanString(row.emailVerifiedStatus || row["EMAIL VERIFIED"]),
+    wifi: cleanString(row.wifi || row.WIFI),
+    browser: cleanString(row.browser || row.BROWSER),
+    emailSentOn: sourceDate ? new Date(sourceDate) : undefined,
+    emailTemplate: cleanString(row.emailTemplate || row["Email Template"] || row.Template),
+    emailSubjectCode: cleanString(row.emailSubjectCode || row["Email Subject"]),
+    emailSeen: cleanString(row.emailSeen || row["Email Seen"]),
+    emailStatus: cleanString(row.emailStatus || row["Email Status"]),
+    enquiryStatus: cleanString(row.enquiryStatus || row["Enquiry Status"]),
+    turnup: cleanString(row.turnup || row.Turnup || row["Turn Up"]),
+    cdcrNo: cleanString(row.cdcrNo || row["CDCR NO"]),
+    cdcrCreation:
+      row.cdcrCreation || row["CDCR Creation"]
+        ? new Date(row.cdcrCreation || row["CDCR Creation"])
+        : undefined,
     description: row.description || "",
     notes: row.notes || "",
     metadata: row,
@@ -684,20 +1036,7 @@ const importMails = asyncHandler(async (req, res) => {
 
   const workbook = XLSX.readFile(req.file.path, { cellDates: true });
   const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-  const sheetRows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: "" });
-  const actualHeaders = (sheetRows[0] || []).map((header) => cleanString(header));
-  const rawRows = XLSX.utils.sheet_to_json(firstSheet, { defval: "" });
-
-  if (
-    MAIL_EXCEL_HEADERS.length !== actualHeaders.length ||
-    MAIL_EXCEL_HEADERS.some((header, index) => header !== actualHeaders[index])
-  ) {
-    fs.unlink(req.file.path, () => { });
-    res.status(400);
-    throw new Error(`Invalid mail format. Expected headers: ${MAIL_EXCEL_HEADERS.join(", ")}`);
-  }
-
-  const rows = rawRows.filter((row) => Object.values(row).some((value) => cleanString(value) !== ""));
+  const rows = mapMailSheetRowsByHeaders(firstSheet);
 
   if (!rows.length) {
     fs.unlink(req.file.path, () => { });
@@ -731,7 +1070,10 @@ const importMails = asyncHandler(async (req, res) => {
       return;
     }
 
-    if (cleanString(row["Email sent"]) && toBoolean(row["Email sent"]) === undefined) {
+    if (
+      cleanString(row["Email sent"] ?? row["Email Sent"] ?? row.emailSent ?? row.emailSentValue) &&
+      resolveEmailSentValue(row) === undefined
+    ) {
       errors.push({
         rowNumber: index + 2,
         name: normalized.name,
@@ -792,6 +1134,21 @@ const importMails = asyncHandler(async (req, res) => {
   if (operations.length) {
     const result = await Mail.bulkWrite(operations, { ordered: false });
     inserted = (result.upsertedCount || 0) + (result.modifiedCount || 0);
+  }
+
+  const importedEmails = rows
+    .map((row) => normalizeEmail(row.email || resolveMailSender(row)))
+    .filter(Boolean);
+
+  if (importedEmails.length) {
+    const syncedMails = await Mail.find({
+      isDeleted: false,
+      $or: [{ email: { $in: importedEmails } }, { from: { $in: importedEmails } }],
+    }).lean();
+
+    for (const mail of syncedMails) {
+      await syncMailToLead(mail, req.user?.id);
+    }
   }
 
   fs.unlink(req.file.path, () => { });
