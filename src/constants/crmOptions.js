@@ -32,6 +32,7 @@ const LEAD_SOURCE = [
   "RCMC Panel",
   "CHA Panel",
   "MCA Panel",
+  "FFFAI",
   "Website",
   "In Person",
   "In Reference",
@@ -92,7 +93,57 @@ const STARTUP_CATEGORY = ["Yes", "No"];
 
 const AEO_STATUS = ["NA", "AEO - T1", "AEO - T2", "AEO - T3", "AEO - LEO"];
 
-const RCMC_PANEL_OPTIONS = LEAD_SOURCE.filter((value) => value.includes("Panel"));
+const RCMC_TYPE_MAP = {
+  "Agriculture & Food": [
+    "APEDA",
+    "Spices Board",
+    "Tea Board",
+    "Coffee Board",
+    "Rubber Board",
+    "Tobacco Board",
+    "Coconut Board",
+  ],
+  "Engineering & Tech": [
+    "EEPC India(Engineering)",
+    "ESC(Electronics & Software)",
+    "TEPC(Telecom Equipment)",
+  ],
+  "Chem, Pharma & Plastics": [
+    "CHEMEXCIL",
+    "PHARMEXCIL",
+    "PLEXCONCIL",
+    "CAPEXIL",
+    "SHEFEXIL",
+  ],
+  "Textiles & Apparel": [
+    "AEPC(Garments)",
+    "TEXPROCIL(Cotton)",
+    "MATEXIL",
+    "HEPC",
+    "CEPC",
+    "WWEPC",
+    "ISEPC",
+    "Jute Board",
+  ],
+  "Lifestyle & Specialized": [
+    "GJEPC",
+    "CLE",
+    "EPCH",
+    "SGEPC",
+    "MPEDA",
+    "CEPC",
+    "IOPEPC",
+  ],
+  "General & Services": [
+    "FIEO(Multi-Product/Trader)",
+    "SEPC(Services EPC)",
+    "PEPC(Project Exports)",
+    "EIC(Export Inspection Council)",
+  ],
+};
+
+const RCMC_PANEL_OPTIONS = Object.keys(RCMC_TYPE_MAP);
+const RCMC_TYPE_OPTIONS = [...new Set(Object.values(RCMC_TYPE_MAP).flat())];
 
 module.exports = {
   MAIL_STATUS,
@@ -106,4 +157,6 @@ module.exports = {
   STARTUP_CATEGORY,
   AEO_STATUS,
   RCMC_PANEL_OPTIONS,
+  RCMC_TYPE_MAP,
+  RCMC_TYPE_OPTIONS,
 };

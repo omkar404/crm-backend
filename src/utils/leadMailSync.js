@@ -4,28 +4,66 @@ const Counter = require("../models/counter.model");
 const { nextSequence, normalizeEmail, normalizePhone } = require("./crm");
 
 let isBackfillInProgress = false;
+const MAIL_SYNC_BATCH_SIZE = 500;
 
-const buildLeadMatchFilter = (email) => {
-  const normalized = normalizeEmail(email);
-  if (!normalized) {
+const compact = (values) => [...new Set(values.filter(Boolean))];
+const chunkArray = (items, size) => {
+  if (!Array.isArray(items) || size <= 0) {
+    return [];
+  }
+
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+};
+
+const buildMailMatchConditions = (lead = {}) => {
+  const leadId = lead._id ? String(lead._id) : "";
+  const idNo = lead.idNo || "";
+
+  return compact([
+    leadId ? { sourceLeadId: leadId } : null,
+    idNo ? { idNo } : null,
+  ]);
+};
+
+const buildLeadMatchConditions = (mail = {}) => {
+  const mailId = mail._id ? String(mail._id) : "";
+  const idNo = mail.idNo || "";
+  const normalizedEmail = normalizeEmail(mail.email || mail.from);
+  const normalizedMobile = normalizePhone(mail.mobileNo);
+
+  return compact([
+    mailId ? { sourceMailId: mailId } : null,
+    idNo ? { idNo } : null,
+    normalizedEmail ? { normalizedEmail } : null,
+    normalizedMobile ? { normalizedMobileNo: normalizedMobile } : null,
+  ]);
+};
+
+const buildMailMatchFilter = (lead = {}) => {
+  const conditions = buildMailMatchConditions(lead);
+  if (!conditions.length) {
     return null;
   }
 
   return {
     isDeleted: false,
-    normalizedEmail: normalized,
+    $or: conditions,
   };
 };
 
-const buildMailMatchFilter = (email) => {
-  const normalized = normalizeEmail(email);
-  if (!normalized) {
+const buildLeadMatchFilter = (mail = {}) => {
+  const conditions = buildLeadMatchConditions(mail);
+  if (!conditions.length) {
     return null;
   }
 
   return {
     isDeleted: false,
-    $or: [{ email: normalized }, { from: normalized }],
+    $or: conditions,
   };
 };
 
@@ -33,12 +71,13 @@ const mapLeadToMailFields = (lead) => {
   const normalizedEmail = normalizeEmail(lead.email || lead.normalizedEmail);
 
   return {
+    sourceLeadId: lead._id ? String(lead._id) : lead.sourceLeadId || "",
     idNo: lead.idNo || "",
     idDate: lead.idDate || null,
     name: lead.name || "",
     iecChaNo: lead.iecChaNo || "",
     landlineNo: lead.landlineNo || "",
-    mobileNo: lead.mobileNo || "",
+    mobileNo: normalizePhone(lead.mobileNo || lead.normalizedMobileNo),
     from: lead.senderEmail || "",
     email: normalizedEmail,
     subject: lead.name || normalizedEmail || "Lead Record",
@@ -85,10 +124,11 @@ const mapMailToLeadFields = (mail) => {
   const normalizedEmail = normalizeEmail(mail.email || mail.from);
 
   return {
+    sourceMailId: mail._id ? String(mail._id) : mail.sourceMailId || "",
     name: mail.name || normalizedEmail || mail.subject || "Untitled Lead",
     iecChaNo: mail.iecChaNo || "",
     landlineNo: mail.landlineNo || "",
-    mobileNo: mail.mobileNo || "",
+    mobileNo: normalizePhone(mail.mobileNo),
     normalizedMobileNo: normalizePhone(mail.mobileNo),
     email: normalizedEmail,
     normalizedEmail,
@@ -132,13 +172,19 @@ const mapMailToLeadFields = (mail) => {
 };
 
 const syncLeadToMail = async (lead, userId) => {
-  const normalizedEmail = normalizeEmail(lead.email || lead.normalizedEmail);
-  if (!normalizedEmail) {
+  const filter = buildMailMatchFilter(lead);
+  const mailFields = mapLeadToMailFields(lead);
+
+  if (!filter) {
+    await Mail.create({
+      ...mailFields,
+      mailId: await nextSequence("mailId", "MAIL"),
+      createdBy: userId || null,
+      updatedBy: userId || null,
+    });
     return;
   }
 
-  const filter = buildMailMatchFilter(normalizedEmail);
-  const mailFields = mapLeadToMailFields(lead);
   const existingMail = await Mail.findOne(filter).select("_id").lean();
 
   if (existingMail) {
@@ -160,13 +206,20 @@ const syncLeadToMail = async (lead, userId) => {
 };
 
 const syncMailToLead = async (mail, userId) => {
-  const normalizedEmail = normalizeEmail(mail.email || mail.from);
-  if (!normalizedEmail) {
+  const filter = buildLeadMatchFilter(mail);
+  const leadFields = mapMailToLeadFields(mail);
+
+  if (!filter) {
+    await Lead.create({
+      ...leadFields,
+      idNo: await nextSequence("leadId", "LEAD"),
+      idDate: new Date(),
+      createdBy: userId || null,
+      updatedBy: userId || null,
+    });
     return;
   }
 
-  const filter = buildLeadMatchFilter(normalizedEmail);
-  const leadFields = mapMailToLeadFields(mail);
   const existingLead = await Lead.findOne(filter);
 
   if (existingLead) {
@@ -188,12 +241,12 @@ const syncMailToLead = async (mail, userId) => {
 };
 
 const syncLeadDeletionToMail = async (lead, userId) => {
-  const normalizedEmail = normalizeEmail(lead.email || lead.normalizedEmail);
-  if (!normalizedEmail) {
+  const filter = buildMailMatchFilter(lead);
+  if (!filter) {
     return;
   }
 
-  await Mail.updateMany(buildMailMatchFilter(normalizedEmail), {
+  await Mail.updateMany(filter, {
     $set: {
       isDeleted: true,
       deletedAt: new Date(),
@@ -203,12 +256,12 @@ const syncLeadDeletionToMail = async (lead, userId) => {
 };
 
 const syncLeadStatusToMail = async (lead, userId) => {
-  const normalizedEmail = normalizeEmail(lead.email || lead.normalizedEmail);
-  if (!normalizedEmail) {
+  const filter = buildMailMatchFilter(lead);
+  if (!filter) {
     return;
   }
 
-  await Mail.updateMany(buildMailMatchFilter(normalizedEmail), {
+  await Mail.updateMany(filter, {
     $set: {
       leadStatus: lead.leadStatus || "",
       updatedBy: userId || null,
@@ -217,90 +270,91 @@ const syncLeadStatusToMail = async (lead, userId) => {
 };
 
 const syncLeadsToMailBulk = async (leads, userId) => {
-  const leadsByEmail = new Map();
-
-  for (const lead of leads || []) {
-    const normalizedEmail = normalizeEmail(lead.email || lead.normalizedEmail);
-    if (!normalizedEmail) {
-      continue;
-    }
-    leadsByEmail.set(normalizedEmail, lead);
-  }
-
-  const emails = [...leadsByEmail.keys()];
-  if (!emails.length) {
+  const validLeads = (leads || []).filter(Boolean);
+  if (!validLeads.length) {
     return;
   }
 
-  const existingMails = await Mail.find(
-    {
-      isDeleted: false,
-      $or: [{ email: { $in: emails } }, { from: { $in: emails } }],
-    },
-    { _id: 1, email: 1, from: 1 }
-  ).lean();
+  for (const leadChunk of chunkArray(validLeads, MAIL_SYNC_BATCH_SIZE)) {
+    const leadIds = compact(leadChunk.map((lead) => (lead._id ? String(lead._id) : "")));
+    const idNos = compact(leadChunk.map((lead) => lead.idNo));
 
-  const existingEmailSet = new Set();
-  existingMails.forEach((mail) => {
-    const email = normalizeEmail(mail.email);
-    const from = normalizeEmail(mail.from);
-    if (email) {
-      existingEmailSet.add(email);
-    }
-    if (from) {
-      existingEmailSet.add(from);
-    }
-  });
+    const existingMails = await Mail.find(
+      {
+        isDeleted: false,
+        $or: compact([
+          leadIds.length ? { sourceLeadId: { $in: leadIds } } : null,
+          idNos.length ? { idNo: { $in: idNos } } : null,
+        ]),
+      },
+      { _id: 1, sourceLeadId: 1, idNo: 1 }
+    ).lean();
 
-  const operations = [];
-  const pendingInsertIndexes = [];
+    const mailLookup = new Map();
+    existingMails.forEach((mail) => {
+      if (mail.sourceLeadId) {
+        mailLookup.set(`lead:${mail.sourceLeadId}`, mail);
+      }
+      if (mail.idNo) {
+        mailLookup.set(`idNo:${mail.idNo}`, mail);
+      }
+    });
 
-  for (const [email, lead] of leadsByEmail.entries()) {
-    const mailFields = mapLeadToMailFields(lead);
+    const operations = [];
+    const pendingInsertIndexes = [];
 
-    if (existingEmailSet.has(email)) {
-      operations.push({
-        updateMany: {
-          filter: buildMailMatchFilter(email),
-          update: {
-            $set: {
-              ...mailFields,
-              updatedBy: userId || null,
+    leadChunk.forEach((lead) => {
+      const leadId = lead._id ? String(lead._id) : "";
+      const idNo = lead.idNo || "";
+      const mailFields = mapLeadToMailFields(lead);
+      const matchedMail =
+        (leadId && mailLookup.get(`lead:${leadId}`)) ||
+        (idNo && mailLookup.get(`idNo:${idNo}`));
+
+      if (matchedMail) {
+        operations.push({
+          updateOne: {
+            filter: { _id: matchedMail._id },
+            update: {
+              $set: {
+                ...mailFields,
+                updatedBy: userId || null,
+              },
             },
+          },
+        });
+        return;
+      }
+
+      operations.push({
+        insertOne: {
+          document: {
+            ...mailFields,
+            mailId: "",
+            createdBy: userId || null,
+            updatedBy: userId || null,
           },
         },
       });
-      continue;
+      pendingInsertIndexes.push(operations.length - 1);
+    });
+
+    if (pendingInsertIndexes.length) {
+      const counter = await Counter.findOneAndUpdate(
+        { name: "mailId" },
+        { $inc: { value: pendingInsertIndexes.length } },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+
+      const startValue = counter.value - pendingInsertIndexes.length + 1;
+      pendingInsertIndexes.forEach((operationIndex, rangeIndex) => {
+        operations[operationIndex].insertOne.document.mailId = `MAIL-${String(startValue + rangeIndex).padStart(6, "0")}`;
+      });
     }
 
-    operations.push({
-      insertOne: {
-        document: {
-          ...mailFields,
-          mailId: "",
-          createdBy: userId || null,
-          updatedBy: userId || null,
-        },
-      },
-    });
-    pendingInsertIndexes.push(operations.length - 1);
-  }
-
-  if (pendingInsertIndexes.length) {
-    const counter = await Counter.findOneAndUpdate(
-      { name: "mailId" },
-      { $inc: { value: pendingInsertIndexes.length } },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    );
-
-    const startValue = counter.value - pendingInsertIndexes.length + 1;
-    pendingInsertIndexes.forEach((operationIndex, rangeIndex) => {
-      operations[operationIndex].insertOne.document.mailId = `MAIL-${String(startValue + rangeIndex).padStart(6, "0")}`;
-    });
-  }
-
-  if (operations.length) {
-    await Mail.bulkWrite(operations, { ordered: false });
+    if (operations.length) {
+      await Mail.bulkWrite(operations, { ordered: false });
+    }
   }
 };
 
@@ -324,6 +378,7 @@ const backfillLeadDataToMail = async () => {
 
 module.exports = {
   backfillLeadDataToMail,
+  mapLeadToMailFields,
   syncLeadToMail,
   syncLeadsToMailBulk,
   syncMailToLead,

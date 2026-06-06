@@ -49,7 +49,9 @@ const leadSchema = new mongoose.Schema(
     industryBrief: { type: String, trim: true, default: "" },
     leadType: { type: String, enum: LEAD_TYPE, default: undefined, index: true },
     priorityRating: { type: String, enum: LEAD_PRIORITY, default: undefined, index: true },
-    leadSource: { type: String, enum: LEAD_SOURCE, default: undefined, index: true },
+    // Imported association/member lists can carry source values outside the core CRM presets.
+    // Keep this field flexible and let filter options merge DB values with master values.
+    leadSource: { type: String, trim: true, default: "", index: true },
     leadStatus: {
       type: String,
       enum: LEAD_STATUS,
@@ -73,6 +75,7 @@ const leadSchema = new mongoose.Schema(
     notes: { type: String, default: "" },
     attachments: { type: [attachmentSchema], default: [] },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
+    sourceMailId: { type: String, trim: true, default: "", index: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null, index: true },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     isDeleted: { type: Boolean, default: false, index: true },

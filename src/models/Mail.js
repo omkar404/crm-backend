@@ -76,6 +76,7 @@ const mailSchema = new mongoose.Schema(
     sentAt: { type: Date, default: null, index: true },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
     dedupeKey: { type: String, trim: true, default: "", sparse: true, index: true },
+    sourceLeadId: { type: String, trim: true, default: "", index: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null, index: true },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     lastOpenedAt: { type: Date, default: null },

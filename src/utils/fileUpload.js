@@ -2,6 +2,12 @@ const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
 
+const toMbBytes = (value, fallbackMb) => {
+  const parsed = Number.parseInt(value, 10);
+  const sizeMb = Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackMb;
+  return sizeMb * 1024 * 1024;
+};
+
 const ensureDir = (dirPath) => {
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true });
@@ -55,7 +61,7 @@ const attachmentUpload = createUploader({
     "image/webp",
     "text/plain",
   ],
-  fileSize: 10 * 1024 * 1024,
+  fileSize: toMbBytes(process.env.ATTACHMENT_MAX_FILE_SIZE_MB, 10),
   maxFiles: 10,
 });
 
@@ -67,7 +73,7 @@ const importUpload = createUploader({
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "application/octet-stream",
   ],
-  fileSize: 25 * 1024 * 1024,
+  fileSize: toMbBytes(process.env.IMPORT_MAX_FILE_SIZE_MB, 100),
   maxFiles: 1,
 });
 

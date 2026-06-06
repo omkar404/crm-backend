@@ -10,6 +10,8 @@ const {
   LEAD_STATUS,
   LEAD_TYPE,
   RCMC_PANEL_OPTIONS,
+  RCMC_TYPE_MAP,
+  RCMC_TYPE_OPTIONS,
 } = require("../constants/crmOptions");
 const { asyncHandler } = require("../utils/asyncHandler");
 const {
@@ -74,6 +76,7 @@ const ALL_FIELDS = [
 ];
 
 const sampleFilePath = path.join(__dirname, "../static/sample-leads.xlsx");
+const IMPORT_BATCH_SIZE = 1000;
 
 const mergeFilterOptions = (...optionSets) => [
   ...new Set(
@@ -83,7 +86,7 @@ const mergeFilterOptions = (...optionSets) => [
 
 const buildLeadFilterOptionsPayload = async () => {
   const baseFilter = { isDeleted: false };
-  const [industry, leadType, leadSource, leadStatus, AEOStatus, RCMCPanel, city, state, priorityRating] =
+  const [industry, leadType, leadSource, leadStatus, AEOStatus, RCMCPanel, RCMCType, city, state, priorityRating] =
     await Promise.all([
       Lead.distinct("industry", baseFilter),
       Lead.distinct("leadType", baseFilter),
@@ -91,10 +94,29 @@ const buildLeadFilterOptionsPayload = async () => {
       Lead.distinct("leadStatus", baseFilter),
       Lead.distinct("AEOStatus", baseFilter),
       Lead.distinct("RCMCPanel", baseFilter),
+      Lead.distinct("RCMCType", baseFilter),
       Lead.distinct("city", baseFilter),
       Lead.distinct("state", baseFilter),
       Lead.distinct("priorityRating", baseFilter),
     ]);
+
+  const dbTypesByPanelDocs = await Lead.aggregate([
+    { $match: { isDeleted: false, RCMCPanel: { $ne: "" }, RCMCType: { $ne: "" } } },
+    { $group: { _id: "$RCMCPanel", values: { $addToSet: "$RCMCType" } } },
+  ]);
+
+  const dbTypesByPanel = Object.fromEntries(
+    dbTypesByPanelDocs.map((row) => [cleanString(row._id), mergeFilterOptions(row.values || [])])
+  );
+
+  const rcmcTypeMap = {};
+  const panelOptions = mergeFilterOptions(RCMC_PANEL_OPTIONS, RCMCPanel);
+  panelOptions.forEach((panel) => {
+    rcmcTypeMap[panel] = mergeFilterOptions(
+      RCMC_TYPE_MAP[panel] || [],
+      dbTypesByPanel[panel] || []
+    );
+  });
 
   return {
     industry: mergeFilterOptions(INDUSTRY_OPTIONS, industry),
@@ -102,7 +124,9 @@ const buildLeadFilterOptionsPayload = async () => {
     leadSource: mergeFilterOptions(LEAD_SOURCE, leadSource),
     leadStatus: mergeFilterOptions(LEAD_STATUS, leadStatus),
     AEOStatus: mergeFilterOptions(AEO_STATUS, AEOStatus),
-    RCMCPanel: mergeFilterOptions(RCMC_PANEL_OPTIONS, RCMCPanel),
+    RCMCPanel: panelOptions,
+    RCMCType: mergeFilterOptions(RCMC_TYPE_OPTIONS, RCMCType),
+    RCMCTypeMap: rcmcTypeMap,
     city: mergeFilterOptions(city),
     state: mergeFilterOptions(state),
     priorityRating: mergeFilterOptions(priorityRating),
@@ -188,6 +212,18 @@ const mapSheetRowsByHeaders = (sheet, headerMap) => {
       });
       return mappedRow;
     });
+};
+
+const chunkArray = (items, size) => {
+  if (!Array.isArray(items) || size <= 0) {
+    return [];
+  }
+
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
 };
 
 const buildLeadPayload = (req, existing = {}) => {
@@ -277,7 +313,7 @@ const buildLeadQuery = (query) => {
   const filter = { isDeleted: false };
   const search = cleanString(query.search);
 
-  ["leadStatus", "industry", "leadType", "leadSource", "AEOStatus", "RCMCPanel", "state", "city", "priorityRating"].forEach(
+  ["leadStatus", "industry", "leadType", "leadSource", "AEOStatus", "RCMCPanel", "RCMCType", "state", "city", "priorityRating"].forEach(
     (field) => {
       if (cleanString(query[field])) {
         filter[field] = query[field];
@@ -458,6 +494,10 @@ const deleteLead = asyncHandler(async (req, res) => {
 });
 
 const listLeads = asyncHandler(async (req, res) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+
   const page = parsePositiveInt(req.query.page, 1);
   const limit = Math.min(parsePositiveInt(req.query.limit, 10), 100);
   const skip = (page - 1) * limit;
@@ -557,17 +597,17 @@ const normalizeImportedLead = (row) => {
     contactPerson: cleanString(row.contactPerson),
     designation: cleanString(row.designation),
     employees: row.employees ? Number(row.employees) : null,
-    turnover: row.turnover || undefined,
-    startupCategory: row.startupCategory || undefined,
-    AEOStatus: row.AEOStatus || undefined,
+    turnover: cleanString(row.turnover) || undefined,
+    startupCategory: cleanString(row.startupCategory) || undefined,
+    AEOStatus: cleanString(row.AEOStatus) || undefined,
     RCMCPanel: cleanString(row.RCMCPanel),
     RCMCType: cleanString(row.RCMCType),
     industry: cleanString(row.industry),
     industryBrief: cleanString(row.industryBrief),
-    leadType: row.leadType || undefined,
-    priorityRating: row.priorityRating || undefined,
-    leadSource: row.leadSource || undefined,
-    leadStatus: row.leadStatus || "Not Contacted",
+    leadType: cleanString(row.leadType) || undefined,
+    priorityRating: cleanString(row.priorityRating) || undefined,
+    leadSource: cleanString(row.leadSource) || undefined,
+    leadStatus: cleanString(row.leadStatus) || "Not Contacted",
     senderEmail: normalizeEmail(row.senderEmail),
     emailVerifiedStatus: cleanString(row.emailVerifiedStatus),
     wifi: cleanString(row.wifi),
@@ -593,138 +633,115 @@ const importLeads = asyncHandler(async (req, res) => {
     throw new Error("No file uploaded");
   }
 
-  const workbook = XLSX.readFile(req.file.path, { cellDates: true });
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  try {
+    const workbook = XLSX.readFile(req.file.path, { cellDates: true });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
 
-  if (!sheet) {
-    fs.unlink(req.file.path, () => {});
-    res.status(400);
-    throw new Error("No sheet found in file");
-  }
-
-  const rows = mapSheetRowsByHeaders(sheet, LEAD_IMPORT_HEADER_MAP);
-  if (!rows.length) {
-    fs.unlink(req.file.path, () => {});
-    res.status(400);
-    throw new Error("Excel/CSV file is empty");
-  }
-
-  const replaceMode = cleanString(req.query.mode).toLowerCase() === "replace";
-  if (replaceMode) {
-    await Lead.updateMany(
-      { isDeleted: false },
-      { $set: { isDeleted: true, deletedAt: new Date(), updatedBy: req.user?.id || null } }
-    );
-  }
-
-  const existingLeads = await Lead.find(
-    { isDeleted: false },
-    { _id: 1, normalizedEmail: 1, normalizedMobileNo: 1 }
-  ).lean();
-
-  const emailMap = new Map(existingLeads.filter((lead) => lead.normalizedEmail).map((lead) => [lead.normalizedEmail, lead._id]));
-  const mobileMap = new Map(existingLeads.filter((lead) => lead.normalizedMobileNo).map((lead) => [lead.normalizedMobileNo, lead._id]));
-  const pendingKeys = new Set();
-
-  const operations = [];
-  const skippedRows = [];
-  const pendingInsertIndexes = [];
-
-  for (let index = 0; index < rows.length; index += 1) {
-    const lead = normalizeImportedLead(rows[index]);
-
-    if (!lead.name) {
-      skippedRows.push({ rowNumber: index + 2, reason: "name is required" });
-      continue;
+    if (!sheet) {
+      res.status(400);
+      throw new Error("No sheet found in file");
     }
 
-    const dedupeKey = lead.normalizedEmail || lead.normalizedMobileNo;
-    if (dedupeKey && pendingKeys.has(dedupeKey)) {
-      skippedRows.push({
-        rowNumber: index + 2,
-        reason: "duplicate row in import file",
-      });
-      continue;
+    const rows = mapSheetRowsByHeaders(sheet, LEAD_IMPORT_HEADER_MAP);
+    if (!rows.length) {
+      res.status(400);
+      throw new Error("Excel/CSV file is empty");
     }
 
-    const existingId = emailMap.get(lead.normalizedEmail) || mobileMap.get(lead.normalizedMobileNo);
+    const replaceMode = cleanString(req.query.mode).toLowerCase() === "replace";
+    if (replaceMode) {
+      await Lead.updateMany(
+        { isDeleted: false },
+        { $set: { isDeleted: true, deletedAt: new Date(), updatedBy: req.user?.id || null } }
+      );
+    }
 
-    if (existingId) {
-      operations.push({
-        updateOne: {
-          filter: { _id: existingId },
-          update: {
-            $set: {
+    const skippedRows = [];
+    let importedCount = 0;
+
+    for (const [chunkIndex, rowChunk] of chunkArray(rows, IMPORT_BATCH_SIZE).entries()) {
+      const operations = [];
+      const pendingInsertRows = [];
+      const importedLeadIds = [];
+      const rowOffset = chunkIndex * IMPORT_BATCH_SIZE;
+
+      for (let index = 0; index < rowChunk.length; index += 1) {
+        const lead = normalizeImportedLead(rowChunk[index]);
+
+        if (!lead.name) {
+          skippedRows.push({ rowNumber: rowOffset + index + 2, reason: "name is required" });
+          continue;
+        }
+
+        operations.push({
+          insertOne: {
+            document: {
               ...lead,
+              idNo: "",
+              idDate: new Date(),
+              createdBy: req.user?.id || null,
               updatedBy: req.user?.id || null,
               isDeleted: false,
             },
           },
-        },
+        });
+        pendingInsertRows.push({
+          operationIndex: operations.length - 1,
+          rowNumber: rowOffset + index + 2,
+        });
+      }
+
+      if (!pendingInsertRows.length) {
+        continue;
+      }
+
+      const counter = await Counter.findOneAndUpdate(
+        { name: "leadId" },
+        { $inc: { value: pendingInsertRows.length } },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+
+      const startValue = counter.value - pendingInsertRows.length + 1;
+      pendingInsertRows.forEach(({ operationIndex }, rangeIndex) => {
+        const idNo = `LEAD-${String(startValue + rangeIndex).padStart(6, "0")}`;
+        operations[operationIndex].insertOne.document.idNo = idNo;
+        importedLeadIds.push(idNo);
+        pendingInsertRows[rangeIndex].idNo = idNo;
       });
-      continue;
+
+      await Lead.bulkWrite(operations, { ordered: false });
+
+      const syncedLeads = await Lead.find({
+        isDeleted: false,
+        idNo: { $in: importedLeadIds },
+      }).lean();
+
+      const persistedIds = new Set(syncedLeads.map((lead) => lead.idNo));
+      pendingInsertRows.forEach(({ idNo, rowNumber }) => {
+        if (idNo && !persistedIds.has(idNo)) {
+          skippedRows.push({
+            rowNumber,
+            reason: "row could not be saved",
+          });
+        }
+      });
+
+      if (syncedLeads.length) {
+        await syncLeadsToMailBulk(syncedLeads, req.user?.id);
+        importedCount += syncedLeads.length;
+      }
     }
 
-    operations.push({
-      insertOne: {
-        document: {
-          ...lead,
-          idNo: "",
-          idDate: new Date(),
-          createdBy: req.user?.id || null,
-          updatedBy: req.user?.id || null,
-          isDeleted: false,
-        },
-      },
+    res.json({
+      success: true,
+      totalRows: rows.length,
+      imported: importedCount,
+      skipped: skippedRows.length,
+      skippedDetails: skippedRows,
     });
-    pendingInsertIndexes.push(operations.length - 1);
-
-    if (lead.normalizedEmail) {
-      pendingKeys.add(lead.normalizedEmail);
-    }
-    if (lead.normalizedMobileNo) {
-      pendingKeys.add(lead.normalizedMobileNo);
-    }
+  } finally {
+    fs.unlink(req.file.path, () => {});
   }
-
-  if (pendingInsertIndexes.length) {
-    const counter = await Counter.findOneAndUpdate(
-      { name: "leadId" },
-      { $inc: { value: pendingInsertIndexes.length } },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    );
-
-    const startValue = counter.value - pendingInsertIndexes.length + 1;
-    pendingInsertIndexes.forEach((operationIndex, rangeIndex) => {
-      operations[operationIndex].insertOne.document.idNo = `LEAD-${String(startValue + rangeIndex).padStart(6, "0")}`;
-    });
-  }
-
-  if (operations.length) {
-    await Lead.bulkWrite(operations, { ordered: false });
-  }
-
-  const syncedLeads = await Lead.find(
-    {
-      isDeleted: false,
-      $or: [
-        { normalizedEmail: { $in: rows.map((row) => normalizeEmail(row.email)).filter(Boolean) } },
-        { normalizedMobileNo: { $in: rows.map((row) => normalizePhone(row.mobileNo || row.mobile || row.phone)).filter(Boolean) } },
-      ],
-    }
-  ).lean();
-
-  await syncLeadsToMailBulk(syncedLeads, req.user?.id);
-
-  fs.unlink(req.file.path, () => {});
-
-  res.json({
-    success: true,
-    totalRows: rows.length,
-    imported: operations.length,
-    skipped: skippedRows.length,
-    skippedDetails: skippedRows,
-  });
 });
 
 const bulkDeleteLeads = asyncHandler(async (req, res) => {

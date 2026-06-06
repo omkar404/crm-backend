@@ -10,6 +10,7 @@ const SERVICE_REQUEST_COUNTER_NAME = "serviceRequestId";
 const SERVICE_REQUEST_SEQUENCE_START = 1200;
 const ADMIN_ONLY_TASK_STATUSES = ["Invoice Raised", "Invoice Paid"];
 const STRIKE_OFF_STATUS = "Strike Off";
+const INVOICE_LOCKED_STATUSES = ["Invoice Raised", "Invoice Paid"];
 
 const generateSR = async () => {
   while (true) {
@@ -333,6 +334,154 @@ const createTask = async (req, res) => {
   });
 };
 
+const updateTaskDetails = async (req, res) => {
+  if (req.user.role !== "ADMIN") {
+    return res.status(403).json({ message: "Only admin can edit allocated work" });
+  }
+
+  const task = await Task.findById(req.params.id);
+  if (!task) {
+    return res.status(404).json({ message: "Task not found" });
+  }
+
+  const {
+    serviceType,
+    subType,
+    assignedToUserId,
+    slaDays,
+    emailSender,
+    emailDate,
+    details,
+    quotation,
+    officialFee,
+    serviceCharges,
+    workLevel,
+  } = req.body || {};
+
+  const isInvoiceLocked = INVOICE_LOCKED_STATUSES.includes(task.status);
+  const hasCommercialEdit = ["quotation", "officialFee", "serviceCharges"].some((field) =>
+    Object.prototype.hasOwnProperty.call(req.body || {}, field)
+  );
+
+  if (isInvoiceLocked && hasCommercialEdit) {
+    return res.status(400).json({
+      message: "Invoice-related details cannot be edited after invoice is raised or paid",
+    });
+  }
+
+  const nextServiceType =
+    typeof serviceType === "string" && serviceType.trim() ? serviceType.trim() : task.serviceType;
+  const nextSubType =
+    typeof subType === "string" && subType.trim() ? subType.trim() : task.subType;
+
+  if (nextServiceType !== task.serviceType || nextSubType !== task.subType) {
+    const serviceTypes = await getServiceTypesConfig();
+    if (!serviceTypes[nextServiceType]) {
+      return res.status(400).json({ message: "Invalid service type" });
+    }
+
+    if (!serviceTypes[nextServiceType].includes(nextSubType)) {
+      return res.status(400).json({ message: "Invalid sub type for service type" });
+    }
+  }
+
+  let nextStaff = null;
+  if (assignedToUserId && String(assignedToUserId) !== String(task.assignedToUserId)) {
+    nextStaff = await User.findById(assignedToUserId);
+    if (!nextStaff || nextStaff.role !== "STAFF") {
+      return res.status(400).json({ message: "Invalid staff user" });
+    }
+  }
+
+  const normalizedWorkLevel = typeof workLevel === "string" ? workLevel.trim() : undefined;
+  if (normalizedWorkLevel !== undefined && normalizedWorkLevel && !WORK_LEVELS.includes(normalizedWorkLevel)) {
+    return res.status(400).json({ message: "Invalid work level" });
+  }
+
+  const normalizedSenderEmail =
+    typeof emailSender === "string" ? emailSender.trim().toLowerCase() : undefined;
+  if (normalizedSenderEmail) {
+    const conflictingUser = await User.findOne({ email: normalizedSenderEmail }).select(
+      "_id email role"
+    );
+
+    if (conflictingUser) {
+      return res.status(400).json({
+        message:
+          "Client Sender Email cannot be a Workdesk staff/admin email. Please enter the client's email ID.",
+      });
+    }
+  }
+
+  task.serviceType = nextServiceType;
+  task.subType = nextSubType;
+
+  if (nextStaff) {
+    const previousStaffName = task.assignedToName || "Unassigned";
+    task.assignedToUserId = nextStaff._id;
+    task.assignedToName = nextStaff.name;
+    task.assignedToEmail = nextStaff.email;
+    task.history.push({
+      fromStatus: previousStaffName,
+      toStatus: nextStaff.name,
+      action: "STAFF_REASSIGNED",
+      performedById: req.user.id,
+      performedByName: req.user.name,
+      note: `Assigned staff changed from '${previousStaffName}' to '${nextStaff.name}'`,
+      timestamp: new Date(),
+    });
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, "slaDays")) {
+    const normalizedSlaDays = Number(slaDays);
+    if (!Number.isFinite(normalizedSlaDays) || normalizedSlaDays <= 0) {
+      return res.status(400).json({ message: "SLA days must be greater than zero" });
+    }
+    task.slaDays = normalizedSlaDays;
+    const deadline = new Date(task.createdAt || Date.now());
+    deadline.setDate(deadline.getDate() + normalizedSlaDays);
+    task.deadline = deadline;
+  }
+
+  if (normalizedSenderEmail !== undefined) {
+    task.emailSender = normalizedSenderEmail || null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, "emailDate")) {
+    task.emailDate = emailDate ? new Date(emailDate) : null;
+  }
+
+  if (typeof details === "string") {
+    task.details = details;
+  }
+
+  if (normalizedWorkLevel !== undefined) {
+    task.workLevel = normalizedWorkLevel;
+  }
+
+  if (!isInvoiceLocked) {
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "quotation")) {
+      task.quotation = typeof quotation === "string" ? quotation.trim() : "";
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "officialFee")) {
+      task.officialFee = parseOptionalAmount(officialFee);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "serviceCharges")) {
+      task.serviceCharges = parseOptionalAmount(serviceCharges);
+    }
+  }
+
+  await task.save();
+
+  const invoice = await Invoice.findOne({ taskId: task._id }).sort({ createdAt: -1 }).lean();
+  res.json({
+    ...task.toObject(),
+    invoice,
+  });
+};
+
 const getTasks = async (req, res) => {
   const isAdmin = req.user.role === "ADMIN";
   const filter = isAdmin
@@ -532,6 +681,7 @@ const addComment = async (req, res) => {
 
 module.exports = {
   createTask,
+  updateTaskDetails,
   getTasks,
   getTaskById,
   updateTaskStatus,

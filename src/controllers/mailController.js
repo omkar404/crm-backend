@@ -5,6 +5,11 @@ const {
   MAIL_EXCEL_HEADERS,
   MAIL_REFERENCE_FILTERS,
 } = require("../constants/mailExcel");
+const {
+  RCMC_PANEL_OPTIONS,
+  RCMC_TYPE_MAP,
+  RCMC_TYPE_OPTIONS,
+} = require("../constants/crmOptions");
 const { asyncHandler } = require("../utils/asyncHandler");
 const {
   buildAttachmentMeta,
@@ -239,6 +244,8 @@ const exactMailFilterOptions = async () => {
   const baseFilter = { isDeleted: false };
   const [
     leadSource,
+    rcmcPanel,
+    rcmcType,
     senderEmail,
     fromEmail,
     templateType,
@@ -258,6 +265,8 @@ const exactMailFilterOptions = async () => {
     cdcrNo,
   ] = await Promise.all([
     Mail.distinct("leadSource", baseFilter),
+    Mail.distinct("RCMCPanel", baseFilter),
+    Mail.distinct("RCMCType", baseFilter),
     Mail.distinct("senderEmail", baseFilter),
     Mail.distinct("from", baseFilter),
     Mail.distinct("templateName", baseFilter),
@@ -277,8 +286,27 @@ const exactMailFilterOptions = async () => {
     Mail.distinct("cdcrNo", baseFilter),
   ]);
 
+  const dbTypesByPanelDocs = await Mail.aggregate([
+    { $match: { isDeleted: false, RCMCPanel: { $ne: "" }, RCMCType: { $ne: "" } } },
+    { $group: { _id: "$RCMCPanel", values: { $addToSet: "$RCMCType" } } },
+  ]);
+
+  const mergeRcmcOptions = (...values) => [...new Set(values.flat().filter(Boolean))];
+  const dbTypesByPanel = Object.fromEntries(
+    dbTypesByPanelDocs.map((row) => [cleanString(row._id), mergeRcmcOptions(row.values || [])])
+  );
+
+  const panelOptions = mergeRcmcOptions(RCMC_PANEL_OPTIONS, rcmcPanel);
+  const rcmcTypeMap = {};
+  panelOptions.forEach((panel) => {
+    rcmcTypeMap[panel] = mergeRcmcOptions(RCMC_TYPE_MAP[panel] || [], dbTypesByPanel[panel] || []);
+  });
+
   return {
     leadSource: leadSource.filter(Boolean),
+    RCMCPanel: panelOptions,
+    RCMCType: mergeRcmcOptions(RCMC_TYPE_OPTIONS, rcmcType),
+    RCMCTypeMap: rcmcTypeMap,
     emailId: mergePreferredReferenceOptions(
       mergeCaseInsensitiveOptions(
         [...senderEmail.filter(Boolean), ...fromEmail.filter(Boolean)],
@@ -503,6 +531,11 @@ const buildMailQuery = (query) => {
   const filter = { isDeleted: false };
   const search = cleanString(query.search);
   const column = cleanString(query.column);
+  const blankStringConditions = (field) => ([
+    { [field]: { $exists: false } },
+    { [field]: "" },
+    { [field]: null },
+  ]);
 
   if (query.status) {
     filter.status = normalizeMailStatus(query.status) || query.status;
@@ -515,6 +548,8 @@ const buildMailQuery = (query) => {
   const exactMappings = {
     emailId: "from",
     leadSource: "leadSource",
+    RCMCPanel: "RCMCPanel",
+    RCMCType: "RCMCType",
     templateType: "templateName",
     templateSubject: "subject",
     ipAddress: "ipAddress",
@@ -586,28 +621,34 @@ const buildMailQuery = (query) => {
   if (cleanString(query.emailVerified)) {
     const rawValue = cleanString(query.emailVerified);
     const boolValue = toBoolean(rawValue);
+    const displayValueMatch = {
+      $or: [
+        // Primary displayed source in UI
+        { emailVerifiedStatus: { $regex: `^${escapeRegex(rawValue)}$`, $options: "i" } },
+        // Fallback displayed source only when emailVerifiedStatus is blank
+        {
+          $and: [
+            { $or: blankStringConditions("emailVerifiedStatus") },
+            { verifyEmail: { $regex: `^${escapeRegex(rawValue)}$`, $options: "i" } },
+          ],
+        },
+      ],
+    };
+
     if (boolValue !== undefined) {
-      filter.$and = [
-        ...(filter.$and || []),
-        {
-          $or: [
-            { emailVerified: boolValue },
-            { emailVerifiedStatus: { $regex: `^${escapeRegex(rawValue)}$`, $options: "i" } },
-            { verifyEmail: { $regex: `^${escapeRegex(rawValue)}$`, $options: "i" } },
-          ],
-        },
-      ];
-    } else {
-      filter.$and = [
-        ...(filter.$and || []),
-        {
-          $or: [
-            { emailVerifiedStatus: { $regex: `^${escapeRegex(rawValue)}$`, $options: "i" } },
-            { verifyEmail: { $regex: `^${escapeRegex(rawValue)}$`, $options: "i" } },
-          ],
-        },
-      ];
+      displayValueMatch.$or.push({
+        $and: [
+          { $or: blankStringConditions("emailVerifiedStatus") },
+          { $or: blankStringConditions("verifyEmail") },
+          { emailVerified: boolValue },
+        ],
+      });
     }
+
+    filter.$and = [
+      ...(filter.$and || []),
+      displayValueMatch,
+    ];
   }
 
   if (cleanString(query.emailSeen)) {
@@ -634,8 +675,7 @@ const buildMailQuery = (query) => {
                 {
                   $or: [
                     { emailSeen: { $exists: false } },
-                    { emailSeen: "" },
-                    { emailSeen: null },
+                    ...blankStringConditions("emailSeen"),
                   ],
                 },
                 {
@@ -1095,45 +1135,38 @@ const importMails = asyncHandler(async (req, res) => {
       return;
     }
 
-    normalized.dedupeKey = [
-      normalized.from,
-      normalized.email || "",
-      normalized.subject.toLowerCase(),
-      normalized.sourceDate && !Number.isNaN(new Date(normalized.sourceDate).getTime())
-        ? new Date(normalized.sourceDate).toISOString().slice(0, 10)
-        : "",
-    ]
-      .filter(Boolean)
-      .join("|");
-
     operations.push({
-      updateOne: {
-        filter: normalized.dedupeKey ? { dedupeKey: normalized.dedupeKey } : { _id: null },
-        update: {
-          $set: {
-            ...normalized,
-            updatedBy: req.user?.id || null,
-            isDeleted: false,
-          },
-          $setOnInsert: {
-            mailId: undefined,
-            createdBy: req.user?.id || null,
-          },
+      insertOne: {
+        document: {
+          ...normalized,
+          dedupeKey: [
+            normalized.from,
+            normalized.email || "",
+            normalized.subject.toLowerCase(),
+            normalized.sourceDate && !Number.isNaN(new Date(normalized.sourceDate).getTime())
+              ? new Date(normalized.sourceDate).toISOString().slice(0, 10)
+              : "",
+          ]
+            .filter(Boolean)
+            .join("|"),
+          mailId: undefined,
+          createdBy: req.user?.id || null,
+          updatedBy: req.user?.id || null,
+          isDeleted: false,
         },
-        upsert: true,
       },
     });
   });
 
   for (const operation of operations) {
-    if (operation.updateOne.update.$setOnInsert.mailId === undefined) {
-      operation.updateOne.update.$setOnInsert.mailId = await nextSequence("mailId", "MAIL");
+    if (operation.insertOne.document.mailId === undefined) {
+      operation.insertOne.document.mailId = await nextSequence("mailId", "MAIL");
     }
   }
 
   if (operations.length) {
     const result = await Mail.bulkWrite(operations, { ordered: false });
-    inserted = (result.upsertedCount || 0) + (result.modifiedCount || 0);
+    inserted = result.insertedCount || operations.length;
   }
 
   const importedEmails = rows
