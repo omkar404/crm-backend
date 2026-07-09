@@ -1,4 +1,12 @@
 const Task = require("../models/task.model.js");
+
+const COMPLETED_TASK_STATUSES = ["Pending for Invoicing", "Invoice Raised", "Invoice Paid", "Invoice Write-Off"];
+const STRIKE_OFF_STATUS = "Strike Off";
+const activeQueueQuery = () => ({
+  jobWorkStatus: { $nin: ["Completed", STRIKE_OFF_STATUS] },
+  status: { $nin: [...COMPLETED_TASK_STATUSES, STRIKE_OFF_STATUS] }
+});
+
 const filterWorkdeskFilterTasks = async (req, res) => {
   try {
     const {
@@ -11,19 +19,20 @@ const filterWorkdeskFilterTasks = async (req, res) => {
     } = req.body;
 
     const user = req.user; // injected by auth middleware
-    let query = {};
+    let query = activeQueueQuery();
 
     /* ================= TAB FILTER ================= */
 
     if (tab === "HIGH_RISK") {
-      query.slaBreached = true;
-      query.status = { $ne: "Invoice Paid" };
+      query.workLevel = "High Risk";
     }
 
     if (tab === "PENDENCY") {
-      query.status = {
-        $nin: ["Approved", "Invoice Paid"]
-      };
+      query.workLevel = "Pendency";
+    }
+
+    if (tab === "IMPORTANT") {
+      query.workLevel = "Important";
     }
 
     /* ================= SEARCH ================= */
@@ -51,7 +60,9 @@ const filterWorkdeskFilterTasks = async (req, res) => {
     /* ================= STATUS ================= */
 
     if (status !== "ALL") {
-      query.status = status;
+      query.status = COMPLETED_TASK_STATUSES.includes(status) || status === STRIKE_OFF_STATUS
+        ? "__NO_ACTIVE_QUEUE_STATUS__"
+        : status;
     }
 
     /* ================= ROLE RESTRICTION ================= */

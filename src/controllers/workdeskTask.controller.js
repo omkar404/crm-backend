@@ -8,9 +8,10 @@ const sendEmail = require("../config/email.js");
 const { getServiceTypesConfig } = require("../utils/workdeskSettings.js");
 const SERVICE_REQUEST_COUNTER_NAME = "serviceRequestId";
 const SERVICE_REQUEST_SEQUENCE_START = 1200;
-const ADMIN_ONLY_TASK_STATUSES = ["Invoice Raised", "Invoice Paid"];
+const INVOICE_MANAGED_TASK_STATUSES = ["Invoice Raised", "Invoice Paid"];
+const ADMIN_DIRECT_TASK_STATUSES = ["Invoice Write-Off"];
 const STRIKE_OFF_STATUS = "Strike Off";
-const INVOICE_LOCKED_STATUSES = ["Invoice Raised", "Invoice Paid"];
+const INVOICE_LOCKED_STATUSES = ["Invoice Raised", "Invoice Paid", "Invoice Write-Off"];
 
 const generateSR = async () => {
   while (true) {
@@ -539,7 +540,11 @@ const updateTaskStatus = async (req, res) => {
     return res.status(403).json({ message: "Only admin can strike off tasks" });
   }
 
-  if (ADMIN_ONLY_TASK_STATUSES.includes(status)) {
+  if (ADMIN_DIRECT_TASK_STATUSES.includes(status) && req.user.role !== "ADMIN") {
+    return res.status(403).json({ message: "Only admin can write off invoices" });
+  }
+
+  if (INVOICE_MANAGED_TASK_STATUSES.includes(status)) {
     return res.status(400).json({
       message: "Invoice statuses can only be managed from Invoice Management",
     });
@@ -567,7 +572,7 @@ const updateTaskStatus = async (req, res) => {
       $set: {
         status,
         updatedAt: timestamp,
-        ...(status === "Invoice Paid" ? { slaBreached: false } : {}),
+        ...(status === "Invoice Paid" || status === "Invoice Write-Off" ? { slaBreached: false } : {}),
       },
       $push: {
         history: {

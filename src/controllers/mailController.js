@@ -618,6 +618,37 @@ const buildMailQuery = (query) => {
     }
   });
 
+  const nameInitialRangePatterns = {
+    "A-H": "A-H",
+    "I-P": "I-P",
+    "Q-Z": "Q-Z",
+  };
+  const selectedNameRanges = normalizeStringList(query.nameInitialRanges || query.nameRange)
+    .map((value) => value.toUpperCase())
+    .filter((value) => nameInitialRangePatterns[value]);
+
+  if (selectedNameRanges.length) {
+    const rangePattern = selectedNameRanges
+      .map((value) => nameInitialRangePatterns[value])
+      .join("");
+    const startsWithSelectedRange = {
+      $regex: `^\\s*[${rangePattern}]`,
+      $options: "i",
+    };
+
+    filter.$and = [
+      ...(filter.$and || []),
+      {
+        $or: [
+          { name: startsWithSelectedRange },
+          { companyName: startsWithSelectedRange },
+          { Name: startsWithSelectedRange },
+          { "Company Name": startsWithSelectedRange },
+        ],
+      },
+    ];
+  }
+
   if (cleanString(query.emailVerified)) {
     const rawValue = cleanString(query.emailVerified);
     const boolValue = toBoolean(rawValue);
@@ -710,6 +741,11 @@ const buildMailQuery = (query) => {
   const sourceDateRange = buildDateRange(query.sourceDateFrom, query.sourceDateTo, query.emailDate);
   if (sourceDateRange) {
     filter.sourceDate = sourceDateRange;
+  }
+
+  const emailSentOnRange = buildDateRange(query.emailSentOnFrom, query.emailSentOnTo, query.emailSentOn);
+  if (emailSentOnRange) {
+    filter.emailSentOn = emailSentOnRange;
   }
 
   if (search) {

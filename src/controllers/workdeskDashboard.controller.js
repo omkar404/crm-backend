@@ -26,6 +26,22 @@ const getStageTracking = async (baseMatch, status) => {
     }));
 };
 
+const getWorkLevelTracking = (baseMatch, workLevel) =>
+    Task.find({ ...baseMatch, workLevel })
+        .sort({ updatedAt: -1, createdAt: -1 })
+        .select(
+            "serviceRequestId clientName clientDisplayId clientSource chaName serviceType subType assignedToName assignedToEmail status officialFee serviceCharges workLevel"
+        )
+        .lean();
+
+const getActiveTaskTracking = (baseMatch) =>
+    Task.find(baseMatch)
+        .sort({ updatedAt: -1, createdAt: -1 })
+        .select(
+            "serviceRequestId clientName clientDisplayId clientSource chaName serviceType subType assignedToName assignedToEmail status officialFee serviceCharges workLevel jobWorkStatus"
+        )
+        .lean();
+
 const getWorkdeskDashboardAnalytics = async (req, res) => {
     try {
         const user = req.user;
@@ -45,6 +61,12 @@ const getWorkdeskDashboardAnalytics = async (req, res) => {
             baseMatch.assignedToUserId = user.id;
         }
 
+        const activeWorkLevelMatch = {
+            ...baseMatch,
+            jobWorkStatus: { $nin: ["Completed", "Strike Off"] },
+            status: { $nin: ["Pending for Invoicing", "Invoice Raised", "Invoice Paid", "Invoice Write-Off", "Strike Off"] }
+        };
+
         const [
             daily,
             weekly,
@@ -58,17 +80,22 @@ const getWorkdeskDashboardAnalytics = async (req, res) => {
             pendingForInvoicingRows,
             invoiceRaisedRows,
             invoicePaidRows,
+            invoiceWriteOffRows,
             overdue,
-            pending
+            pending,
+            highRisk,
+            pendency,
+            important,
+            activeTaskRows,
+            highRiskRows,
+            pendencyRows,
+            importantRows
         ] = await Promise.all([
             Task.countDocuments({ ...baseMatch, createdAt: { $gte: startOfToday } }),
             Task.countDocuments({ ...baseMatch, createdAt: { $gte: startOfWeek } }),
             Task.countDocuments({ ...baseMatch, createdAt: { $gte: startOfMonth } }),
             Task.countDocuments({ ...baseMatch, createdAt: { $gte: startOfYear } }),
-            Task.countDocuments({
-                ...baseMatch,
-                status: { $ne: "Invoice Paid" }
-            }),
+            Task.countDocuments(activeWorkLevelMatch),
             Task.countDocuments({
                 ...baseMatch,
                 status: "Invoice Paid"
@@ -77,10 +104,11 @@ const getWorkdeskDashboardAnalytics = async (req, res) => {
                 ...baseMatch,
                 status: {
                     $in: ["In Process", "Draft Sent for Approval", "Deficiency Raised"]
-                }
+                },
+                jobWorkStatus: { $nin: ["Completed", "Strike Off"] }
             }),
             Task.aggregate([
-                { $match: { ...baseMatch, status: { $ne: "Invoice Paid" } } },
+                { $match: activeWorkLevelMatch },
                 {
                     $group: {
                         _id: "$assignedToName",
@@ -105,15 +133,22 @@ const getWorkdeskDashboardAnalytics = async (req, res) => {
             getStageTracking(baseMatch, "Pending for Invoicing"),
             getStageTracking(baseMatch, "Invoice Raised"),
             getStageTracking(baseMatch, "Invoice Paid"),
+            getStageTracking(baseMatch, "Invoice Write-Off"),
             Task.countDocuments({
-                ...baseMatch,
+                ...activeWorkLevelMatch,
                 slaBreached: true,
-                status: { $ne: "Invoice Paid" }
             }),
             Task.countDocuments({
-                ...baseMatch,
-                status: { $nin: ["Invoice Paid", "Approved"] }
-            })
+                ...activeWorkLevelMatch,
+                status: { $nin: ["Approved", ...activeWorkLevelMatch.status.$nin] }
+            }),
+            Task.countDocuments({ ...activeWorkLevelMatch, workLevel: "High Risk" }),
+            Task.countDocuments({ ...activeWorkLevelMatch, workLevel: "Pendency" }),
+            Task.countDocuments({ ...activeWorkLevelMatch, workLevel: "Important" }),
+            getActiveTaskTracking(activeWorkLevelMatch),
+            getWorkLevelTracking(activeWorkLevelMatch, "High Risk"),
+            getWorkLevelTracking(activeWorkLevelMatch, "Pendency"),
+            getWorkLevelTracking(activeWorkLevelMatch, "Important")
         ]);
 
         res.json({
@@ -124,17 +159,28 @@ const getWorkdeskDashboardAnalytics = async (req, res) => {
                     totalActive,
                     completed,
                     critical,
+                    highRisk,
+                    pendency,
+                    important,
                     totalPendingForInvoicing: pendingForInvoicingRows.length,
                     totalInvoiceRaised: invoiceRaisedRows.length,
-                    totalInvoicePaid: invoicePaidRows.length
+                    totalInvoicePaid: invoicePaidRows.length,
+                    totalInvoiceWriteOff: invoiceWriteOffRows.length
                 },
                 staffLoad,
                 staffReadyInvoice,
                 invoiceTracking: {
                     pendingForInvoicing: pendingForInvoicingRows,
                     invoiceRaised: invoiceRaisedRows,
-                    invoicePaid: invoicePaidRows
+                    invoicePaid: invoicePaidRows,
+                    invoiceWriteOff: invoiceWriteOffRows
                 },
+                workLevelTracking: {
+                    highRisk: highRiskRows,
+                    pendency: pendencyRows,
+                    important: importantRows
+                },
+                activeTasks: activeTaskRows,
                 risk: {
                     overdue,
                     pending

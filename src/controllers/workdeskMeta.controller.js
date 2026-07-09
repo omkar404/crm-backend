@@ -24,6 +24,7 @@ const getWorkdeskMeta = async (req, res) => {
     "Pending for Invoicing",
     "Invoice Raised",
     "Invoice Paid",
+    "Invoice Write-Off",
   ];
   const adminWorkflowStatuses = [...workflowStatuses, "Strike Off"];
 

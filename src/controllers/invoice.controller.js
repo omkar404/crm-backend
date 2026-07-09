@@ -18,6 +18,9 @@ const roundAmount = (value) => Math.round((Number(value) + Number.EPSILON) * 100
 
 const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+const isBlank = (value) =>
+  value === null || value === undefined || (typeof value === "string" && !value.trim());
+
 const resolveUniqueInvoiceNumber = async (requestedNumber, currentInvoiceId = null) => {
   const baseNumber =
     typeof requestedNumber === "string" && requestedNumber.trim()
@@ -81,7 +84,6 @@ const raiseInvoice = async (req, res) => {
     quotationMode,
     officialFee,
     serviceCharges,
-    netAmount,
     gstAmount,
     issuedDate,
   } = req.body;
@@ -103,27 +105,41 @@ const raiseInvoice = async (req, res) => {
   }
 
   const normalizedQuotationMode =
-    typeof (quotationMode ?? task.quotation) === "string"
-      ? String(quotationMode ?? task.quotation).trim()
+    typeof quotationMode === "string"
+      ? quotationMode.trim()
       : "";
-  const normalizedOfficialFee = parseAmount(officialFee ?? task.officialFee);
-  const normalizedServiceCharges = parseAmount(serviceCharges ?? task.serviceCharges);
-  const normalizedNetAmount = parseAmount(netAmount);
+  const normalizedOfficialFee = parseAmount(officialFee);
+  const normalizedServiceCharges = parseAmount(serviceCharges);
   const normalizedGstAmount = parseAmount(gstAmount);
+  const invoiceDate = issuedDate ? new Date(issuedDate) : null;
 
-  if (normalizedNetAmount === null) {
-    return res.status(400).json({ message: "Net amount could not be determined" });
+  if (isBlank(invoiceNumber)) {
+    return res.status(400).json({ message: "Invoice number is required" });
+  }
+
+  if (!invoiceDate || Number.isNaN(invoiceDate.getTime())) {
+    return res.status(400).json({ message: "Invoice date is required" });
+  }
+
+  if (!normalizedQuotationMode) {
+    return res.status(400).json({ message: "Quotation is required" });
+  }
+
+  if (normalizedOfficialFee === null) {
+    return res.status(400).json({ message: "Invoice official fees are required" });
+  }
+
+  if (normalizedServiceCharges === null) {
+    return res.status(400).json({ message: "Invoice service fees are required" });
   }
 
   if (normalizedGstAmount === null) {
     return res.status(400).json({ message: "GST amount is required" });
   }
 
+  const normalizedNetAmount = roundAmount(normalizedOfficialFee + normalizedServiceCharges);
   const totalAmount = roundAmount(normalizedNetAmount + normalizedGstAmount);
-  const invoiceDate = issuedDate ? new Date(issuedDate) : new Date();
-  const normalizedInvoiceNumber = await resolveUniqueInvoiceNumber(
-    typeof invoiceNumber === "string" && invoiceNumber.trim() ? invoiceNumber.trim() : generateInvoiceNo()
-  );
+  const normalizedInvoiceNumber = await resolveUniqueInvoiceNumber(invoiceNumber.trim());
 
   const invoicePayload = {
     invoiceNumber: normalizedInvoiceNumber,
@@ -238,6 +254,93 @@ const markInvoicePaid = async (req, res) => {
   res.json(await buildTaskResponse(task._id));
 };
 
+const updateInvoice = async (req, res) => {
+  if (req.user.role !== "ADMIN") {
+    return res.status(403).json({ message: "Admin only" });
+  }
+
+  const invoice = await Invoice.findById(req.params.id);
+  if (!invoice) {
+    return res.status(404).json({ message: "Invoice not found" });
+  }
+
+  const task = await Task.findById(invoice.taskId);
+  if (!task) {
+    return res.status(404).json({ message: "Task not found for invoice" });
+  }
+
+  const {
+    invoiceNumber,
+    issuedDate,
+    quotationMode,
+    officialFee,
+    serviceCharges,
+    netAmount,
+    gstAmount,
+    paidDate,
+    tdsAmount,
+  } = req.body || {};
+
+  const normalizedInvoiceNumber =
+    typeof invoiceNumber === "string" && invoiceNumber.trim()
+      ? await resolveUniqueInvoiceNumber(invoiceNumber.trim(), invoice._id)
+      : invoice.invoiceNumber;
+  const normalizedQuotationMode =
+    typeof (quotationMode ?? invoice.quotationMode ?? task.quotation) === "string"
+      ? String(quotationMode ?? invoice.quotationMode ?? task.quotation).trim()
+      : "";
+  const normalizedOfficialFee = parseAmount(officialFee ?? invoice.officialFee ?? task.officialFee);
+  const normalizedServiceCharges = parseAmount(serviceCharges ?? invoice.serviceCharges ?? task.serviceCharges);
+  const normalizedNetAmount = parseAmount(netAmount ?? invoice.netAmount);
+  const normalizedGstAmount = parseAmount(gstAmount ?? invoice.gstAmount);
+
+  if (normalizedNetAmount === null) {
+    return res.status(400).json({ message: "Net amount could not be determined" });
+  }
+
+  if (normalizedGstAmount === null) {
+    return res.status(400).json({ message: "GST amount is required" });
+  }
+
+  const totalAmount = roundAmount(normalizedNetAmount + normalizedGstAmount);
+  const normalizedTdsAmount = parseAmount(tdsAmount ?? invoice.tdsAmount) ?? 0;
+
+  invoice.invoiceNumber = normalizedInvoiceNumber;
+  invoice.quotationMode = normalizedQuotationMode;
+  invoice.officialFee = normalizedOfficialFee;
+  invoice.serviceCharges = normalizedServiceCharges;
+  invoice.netAmount = normalizedNetAmount;
+  invoice.amount = normalizedNetAmount;
+  invoice.gstAmount = normalizedGstAmount;
+  invoice.totalAmount = totalAmount;
+  invoice.issuedDate = issuedDate ? new Date(issuedDate) : invoice.issuedDate;
+
+  if (invoice.status === "Invoice Paid" || task.status === "Invoice Paid") {
+    invoice.status = "Invoice Paid";
+    invoice.paidDate = paidDate ? new Date(paidDate) : invoice.paidDate || new Date();
+    invoice.tdsAmount = normalizedTdsAmount;
+    invoice.receivedAmount = roundAmount(totalAmount - normalizedTdsAmount);
+    invoice.receiptAcknowledgement = invoice.receiptAcknowledgement || generateReceiptNo();
+    task.status = "Invoice Paid";
+    task.slaBreached = false;
+  }
+
+  task.history.push({
+    fromStatus: task.status,
+    toStatus: task.status,
+    action: "INVOICE_UPDATED",
+    performedById: req.user.id,
+    performedByName: req.user.name,
+    note: "Invoice details edited by admin",
+    timestamp: new Date(),
+  });
+
+  await invoice.save();
+  await task.save();
+
+  res.json(await buildTaskResponse(task._id));
+};
+
 const getInvoices = async (req, res) => {
   const query = req.user.role === "ADMIN" ? {} : { handledByUserId: req.user.id };
   const invoices = await Invoice.find(query).sort({ createdAt: -1 });
@@ -247,5 +350,6 @@ const getInvoices = async (req, res) => {
 module.exports = {
   raiseInvoice,
   markInvoicePaid,
+  updateInvoice,
   getInvoices,
 };

@@ -56,6 +56,7 @@ const workdeskTaskSchema = new mongoose.Schema(
         "Pending for Invoicing",
         "Invoice Raised",
         "Invoice Paid",
+        "Invoice Write-Off",
         "Strike Off"
       ],
       default: "Request Initiated"

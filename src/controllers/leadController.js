@@ -453,11 +453,14 @@ const updateLead = asyncHandler(async (req, res) => {
     throw new Error("Name is required");
   }
 
+  const emailChanged = payload.normalizedEmail !== existing.normalizedEmail;
+  const mobileChanged = payload.normalizedMobileNo !== existing.normalizedMobileNo;
   const duplicate = await getDuplicateLead({
-    email: payload.normalizedEmail,
-    mobileNo: payload.normalizedMobileNo,
+    email: emailChanged ? payload.normalizedEmail : "",
+    mobileNo: mobileChanged ? payload.normalizedMobileNo : "",
     excludeId: req.params.id,
   });
+
 
   if (duplicate) {
     res.status(409);

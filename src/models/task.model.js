@@ -84,13 +84,19 @@ const STATUS_TRANSITIONS = {
   ],
   "Pending for Invoicing": [
     "Invoice Raised",
+    "Invoice Write-Off",
     "Strike Off",
   ],
   "Invoice Raised": [
     "Invoice Paid",
+    "Invoice Write-Off",
     "Strike Off",
   ],
   "Invoice Paid": [
+    "Invoice Write-Off",
+    "Strike Off",
+  ],
+  "Invoice Write-Off": [
     "Strike Off",
   ],
 };
@@ -113,6 +119,7 @@ const TASK_STATUSES = [
   "Pending for Invoicing",
   "Invoice Raised",
   "Invoice Paid",
+  "Invoice Write-Off",
   "Strike Off",
 ];
 

@@ -6,7 +6,7 @@ const markSlaBreachedTasks = async () => {
   await Task.updateMany(
     {
       deadline: { $lt: now },
-      status: { $ne: "Invoice Paid" },
+      status: { $nin: ["Invoice Paid", "Invoice Write-Off"] },
       slaBreached: false
     },
     {
