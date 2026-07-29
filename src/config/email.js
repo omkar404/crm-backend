@@ -28,15 +28,15 @@ const createTransporter = () => {
   return null;
 };
 
-module.exports = async function sendEmail({ to, cc, bcc, subject, text, html, attachments = [] }) {
+module.exports = async function sendEmail({ from, to, cc, bcc, subject, text, html, attachments = [] }) {
   const transporter = createTransporter();
 
   if (!transporter) {
     throw new Error("SMTP credentials are not configured");
   }
 
-  await transporter.sendMail({
-    from: process.env.SMTP_FROM || process.env.GMAIL_USER || process.env.SMTP_USER,
+  return transporter.sendMail({
+    from: from || process.env.SMTP_FROM || process.env.GMAIL_USER || process.env.SMTP_USER,
     to,
     cc,
     bcc,

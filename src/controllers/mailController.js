@@ -240,10 +240,14 @@ const resolveEmailSentValue = (source = {}, fallback) => {
   return toBoolean(value);
 };
 
-const exactMailFilterOptions = async () => {
+const exactMailFilterOptions = async ({ campaignOnly = false } = {}) => {
   const baseFilter = { isDeleted: false };
+  if (campaignOnly) {
+    baseFilter["metadata.source"] = "campaign";
+  }
   const [
     leadSource,
+    campaignName,
     rcmcPanel,
     rcmcType,
     senderEmail,
@@ -265,6 +269,7 @@ const exactMailFilterOptions = async () => {
     cdcrNo,
   ] = await Promise.all([
     Mail.distinct("leadSource", baseFilter),
+    Mail.distinct("metadata.campaignName", baseFilter),
     Mail.distinct("RCMCPanel", baseFilter),
     Mail.distinct("RCMCType", baseFilter),
     Mail.distinct("senderEmail", baseFilter),
@@ -304,6 +309,7 @@ const exactMailFilterOptions = async () => {
 
   return {
     leadSource: leadSource.filter(Boolean),
+    campaignName: campaignName.filter(Boolean),
     RCMCPanel: panelOptions,
     RCMCType: mergeRcmcOptions(RCMC_TYPE_OPTIONS, rcmcType),
     RCMCTypeMap: rcmcTypeMap,
@@ -326,7 +332,7 @@ const exactMailFilterOptions = async () => {
     emailDate: sourceDate.filter(Boolean).map((value) => new Date(value).toISOString().slice(0, 10)),
     ipAddress: mergeCaseInsensitiveOptions(ipAddress.filter(Boolean), MAIL_REFERENCE_FILTERS.ipAddress),
     webTabAndType: mergeCaseInsensitiveOptions(webTabAndType.filter(Boolean), MAIL_REFERENCE_FILTERS.webTabAndType),
-    emailVerified: mergeReferenceOptions(
+    emailVerified: mergeCaseInsensitiveOptions(
       [
         ...emailVerifiedBoolean.filter(Boolean).map((value) => (value ? "Yes" : "No")),
         ...emailVerifiedStatus.filter(Boolean),
@@ -510,6 +516,7 @@ const mapMailResponse = (mail) => ({
   leadType: mail.leadType || "",
   priorityRating: mail.priorityRating || "",
   leadSource: mail.leadSource || "",
+  campaignName: mail.metadata?.campaignName || mail.subject || mail.leadSource || "",
   leadStatus: mail.leadStatus || "",
   emailVerifiedStatus: mail.emailVerifiedStatus || "",
   wifi: mail.wifi || "",
@@ -543,6 +550,23 @@ const buildMailQuery = (query) => {
 
   if (query.priority) {
     filter.priority = query.priority;
+  }
+
+  const campaignOnly = String(query.campaignOnly || "").toLowerCase() === "true";
+  const requestedCampaignName = cleanString(query.campaignName);
+
+  if (campaignOnly) {
+    filter["metadata.source"] = "campaign";
+    if (!requestedCampaignName) {
+      filter["metadata.campaignName"] = "__NO_CAMPAIGN_SELECTED__";
+    }
+  }
+
+  if (requestedCampaignName) {
+    filter["metadata.campaignName"] = {
+      $regex: `^${escapeRegex(requestedCampaignName)}$`,
+      $options: "i",
+    };
   }
 
   const exactMappings = {
@@ -798,7 +822,9 @@ const getAllMails = asyncHandler(async (req, res) => {
   };
 
   if (includeFilters) {
-    response.filterOptions = await exactMailFilterOptions();
+    response.filterOptions = await exactMailFilterOptions({
+      campaignOnly: String(req.query.campaignOnly || "").toLowerCase() === "true",
+    });
   }
 
   res.json(response);
@@ -807,7 +833,9 @@ const getAllMails = asyncHandler(async (req, res) => {
 const getFilterOptions = asyncHandler(async (req, res) => {
   res.json({
     success: true,
-    data: await exactMailFilterOptions(),
+    data: await exactMailFilterOptions({
+      campaignOnly: String(req.query.campaignOnly || "").toLowerCase() === "true",
+    }),
   });
 });
 

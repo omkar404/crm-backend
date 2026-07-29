@@ -86,7 +86,19 @@ const mergeFilterOptions = (...optionSets) => [
 
 const buildLeadFilterOptionsPayload = async () => {
   const baseFilter = { isDeleted: false };
-  const [industry, leadType, leadSource, leadStatus, AEOStatus, RCMCPanel, RCMCType, city, state, priorityRating] =
+  const [
+    industry,
+    leadType,
+    leadSource,
+    leadStatus,
+    AEOStatus,
+    RCMCPanel,
+    RCMCType,
+    city,
+    state,
+    priorityRating,
+    emailVerifiedStatus,
+  ] =
     await Promise.all([
       Lead.distinct("industry", baseFilter),
       Lead.distinct("leadType", baseFilter),
@@ -98,6 +110,7 @@ const buildLeadFilterOptionsPayload = async () => {
       Lead.distinct("city", baseFilter),
       Lead.distinct("state", baseFilter),
       Lead.distinct("priorityRating", baseFilter),
+      Lead.distinct("emailVerifiedStatus", baseFilter),
     ]);
 
   const dbTypesByPanelDocs = await Lead.aggregate([
@@ -130,6 +143,7 @@ const buildLeadFilterOptionsPayload = async () => {
     city: mergeFilterOptions(city),
     state: mergeFilterOptions(state),
     priorityRating: mergeFilterOptions(priorityRating),
+    emailVerifiedStatus: mergeFilterOptions(["Yes", "No", "Incorrect", "Invalid"], emailVerifiedStatus),
   };
 };
 
@@ -313,7 +327,19 @@ const buildLeadQuery = (query) => {
   const filter = { isDeleted: false };
   const search = cleanString(query.search);
 
-  ["leadStatus", "industry", "leadType", "leadSource", "AEOStatus", "RCMCPanel", "RCMCType", "state", "city", "priorityRating"].forEach(
+  [
+    "leadStatus",
+    "industry",
+    "leadType",
+    "leadSource",
+    "emailVerifiedStatus",
+    "AEOStatus",
+    "RCMCPanel",
+    "RCMCType",
+    "state",
+    "city",
+    "priorityRating",
+  ].forEach(
     (field) => {
       if (cleanString(query[field])) {
         filter[field] = query[field];
@@ -414,16 +440,6 @@ const createLead = asyncHandler(async (req, res) => {
     throw new Error("Name is required");
   }
 
-  const duplicate = await getDuplicateLead({
-    email: payload.normalizedEmail,
-    mobileNo: payload.normalizedMobileNo,
-  });
-
-  if (duplicate) {
-    res.status(409);
-    throw new Error("Lead with same email or mobile number already exists");
-  }
-
   payload.idNo = await nextSequence("leadId", "LEAD");
   payload.idDate = new Date();
   payload.createdBy = req.user?.id || null;
@@ -451,20 +467,6 @@ const updateLead = asyncHandler(async (req, res) => {
   if (!payload.name) {
     res.status(400);
     throw new Error("Name is required");
-  }
-
-  const emailChanged = payload.normalizedEmail !== existing.normalizedEmail;
-  const mobileChanged = payload.normalizedMobileNo !== existing.normalizedMobileNo;
-  const duplicate = await getDuplicateLead({
-    email: emailChanged ? payload.normalizedEmail : "",
-    mobileNo: mobileChanged ? payload.normalizedMobileNo : "",
-    excludeId: req.params.id,
-  });
-
-
-  if (duplicate) {
-    res.status(409);
-    throw new Error("Another lead already exists with same email or mobile number");
   }
 
   payload.updatedBy = req.user?.id || null;

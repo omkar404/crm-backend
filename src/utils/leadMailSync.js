@@ -67,6 +67,57 @@ const buildLeadMatchFilter = (mail = {}) => {
   };
 };
 
+const isEmailVerifiedYes = (lead = {}) =>
+  String(lead.emailVerifiedStatus || "")
+    .trim()
+    .toLowerCase() === "yes";
+
+const DEFAULT_CAMPAIGN_SUBJECTS = {
+  "aeo panel": "AEO Compliance Outreach",
+  "cha panel": "CHA Partner Outreach",
+  epcg: "EPCG Advisory Outreach",
+  "epr panel": "EPR Compliance Outreach",
+  "erp panel": "EPR Compliance Outreach",
+  fffai: "FFFAI Member Outreach",
+  "fssai panel": "FSSAI Registration Outreach",
+  "rcmc panel": "RCMC Registration Outreach",
+  website: "Website Lead Outreach",
+};
+
+const getProfessionalCampaignSubject = (value) => {
+  const cleaned = String(value || "").trim();
+  if (!cleaned) {
+    return "";
+  }
+
+  return DEFAULT_CAMPAIGN_SUBJECTS[cleaned.toLowerCase()] || cleaned;
+};
+
+const getCampaignMirrorName = (lead = {}) =>
+  getProfessionalCampaignSubject(compact([
+    lead.leadSource,
+    lead.RCMCPanel,
+    lead.AEOStatus,
+    lead.RCMCType,
+    lead.industry,
+  ])[0]) || "Campaign Outreach";
+
+const buildCampaignMirrorFilter = (lead = {}) => {
+  const leadId = lead._id ? String(lead._id) : lead.sourceLeadId || "";
+  const campaignName = getCampaignMirrorName(lead);
+
+  if (!leadId || !campaignName) {
+    return null;
+  }
+
+  return {
+    isDeleted: false,
+    "metadata.source": "campaign",
+    "metadata.leadId": leadId,
+    "metadata.campaignName": campaignName,
+  };
+};
+
 const mapLeadToMailFields = (lead) => {
   const normalizedEmail = normalizeEmail(lead.email || lead.normalizedEmail);
 
@@ -120,6 +171,33 @@ const mapLeadToMailFields = (lead) => {
   };
 };
 
+const mapLeadToCampaignMirrorFields = (lead = {}, existingMail = null) => {
+  const campaignName = getCampaignMirrorName(lead);
+  const leadFields = mapLeadToMailFields(lead);
+  const previousMetadata = existingMail?.metadata || {};
+
+  return {
+    ...leadFields,
+    from: existingMail?.from || leadFields.from || "",
+    senderEmail: existingMail?.senderEmail || leadFields.senderEmail || "",
+    subject: existingMail?.subject || `${campaignName} Campaign`,
+    emailSent: existingMail?.emailSent ?? false,
+    emailSentOn: existingMail?.emailSentOn || leadFields.emailSentOn || null,
+    emailSeen: existingMail?.emailSeen || leadFields.emailSeen || "No",
+    emailStatus: existingMail?.emailStatus || leadFields.emailStatus || "Draft",
+    status: existingMail?.status || "draft",
+    sentAt: existingMail?.sentAt || null,
+    lastOpenedAt: existingMail?.lastOpenedAt || null,
+    metadata: {
+      ...previousMetadata,
+      source: "campaign",
+      campaignMirror: true,
+      campaignName,
+      leadId: lead._id ? String(lead._id) : lead.sourceLeadId || "",
+    },
+  };
+};
+
 const mapMailToLeadFields = (mail) => {
   const normalizedEmail = normalizeEmail(mail.email || mail.from);
 
@@ -169,6 +247,84 @@ const mapMailToLeadFields = (mail) => {
     isDeleted: false,
     deletedAt: null,
   };
+};
+
+const syncLeadToCampaignMirror = async (lead, userId) => {
+  const leadId = lead?._id ? String(lead._id) : lead?.sourceLeadId || "";
+
+  if (!leadId) {
+    return;
+  }
+
+  if (!isEmailVerifiedYes(lead) || lead.isDeleted) {
+    await Mail.updateMany(
+      {
+        "metadata.source": "campaign",
+        "metadata.leadId": leadId,
+        "metadata.campaignMirror": true,
+        isDeleted: false,
+      },
+      {
+        $set: {
+          isDeleted: true,
+          deletedAt: new Date(),
+          updatedBy: userId || null,
+        },
+      }
+    );
+    return;
+  }
+
+  const filter = buildCampaignMirrorFilter(lead);
+  if (!filter) {
+    return;
+  }
+
+  const existingMail = await Mail.findOne(filter).lean();
+  const mirrorFields = mapLeadToCampaignMirrorFields(lead, existingMail);
+
+  if (existingMail) {
+    await Mail.updateOne(
+      { _id: existingMail._id },
+      {
+        $set: {
+          ...mirrorFields,
+          updatedBy: userId || null,
+        },
+      }
+    );
+    return;
+  }
+
+  await Mail.create({
+    ...mirrorFields,
+    mailId: await nextSequence("mailId", "MAIL"),
+    createdBy: userId || null,
+    updatedBy: userId || null,
+  });
+};
+
+const syncLeadCampaignMirrorDeletion = async (lead, userId) => {
+  const leadId = lead?._id ? String(lead._id) : lead?.sourceLeadId || "";
+  if (!leadId) {
+    return;
+  }
+
+  await Mail.updateMany(
+    {
+      "metadata.source": "campaign",
+      "metadata.leadId": leadId,
+      "metadata.campaignMirror": true,
+      isDeleted: false,
+    },
+    {
+      $set: {
+        isDeleted: true,
+        deletedAt: new Date(),
+        updatedBy: userId || null,
+      },
+    }
+  );
 };
 
 const syncLeadToMail = async (lead, userId) => {
@@ -358,6 +514,134 @@ const syncLeadsToMailBulk = async (leads, userId) => {
   }
 };
 
+const syncLeadsToCampaignMirrorBulk = async (leads, userId) => {
+  const validLeads = (leads || []).filter(Boolean);
+  if (!validLeads.length) {
+    return;
+  }
+
+  for (const leadChunk of chunkArray(validLeads, MAIL_SYNC_BATCH_SIZE)) {
+    const activeVerifiedLeads = leadChunk.filter(
+      (lead) => isEmailVerifiedYes(lead) && !lead.isDeleted && (lead._id || lead.sourceLeadId)
+    );
+    const inactiveLeadIds = compact(
+      leadChunk
+        .filter((lead) => !isEmailVerifiedYes(lead) || lead.isDeleted)
+        .map((lead) => (lead._id ? String(lead._id) : lead.sourceLeadId || ""))
+    );
+
+    if (inactiveLeadIds.length) {
+      await Mail.updateMany(
+        {
+          "metadata.source": "campaign",
+          "metadata.campaignMirror": true,
+          "metadata.leadId": { $in: inactiveLeadIds },
+          isDeleted: false,
+        },
+        {
+          $set: {
+            isDeleted: true,
+            deletedAt: new Date(),
+            updatedBy: userId || null,
+          },
+        }
+      );
+    }
+
+    if (!activeVerifiedLeads.length) {
+      continue;
+    }
+
+    const leadIds = activeVerifiedLeads.map((lead) => (lead._id ? String(lead._id) : lead.sourceLeadId || ""));
+    const campaignNames = activeVerifiedLeads.map(getCampaignMirrorName);
+    const existingMails = await Mail.find(
+      {
+        isDeleted: false,
+        "metadata.source": "campaign",
+        "metadata.leadId": { $in: leadIds },
+        "metadata.campaignName": { $in: campaignNames },
+      },
+      {
+        _id: 1,
+        from: 1,
+        senderEmail: 1,
+        subject: 1,
+        emailSent: 1,
+        emailSentOn: 1,
+        emailSeen: 1,
+        emailStatus: 1,
+        status: 1,
+        sentAt: 1,
+        lastOpenedAt: 1,
+        metadata: 1,
+      }
+    ).lean();
+
+    const existingLookup = new Map();
+    existingMails.forEach((mail) => {
+      const leadId = mail.metadata?.leadId || "";
+      const campaignName = mail.metadata?.campaignName || "";
+      if (leadId && campaignName) {
+        existingLookup.set(`${leadId}::${campaignName}`, mail);
+      }
+    });
+
+    const operations = [];
+    const pendingInsertIndexes = [];
+
+    activeVerifiedLeads.forEach((lead) => {
+      const leadId = lead._id ? String(lead._id) : lead.sourceLeadId || "";
+      const campaignName = getCampaignMirrorName(lead);
+      const matchedMail = existingLookup.get(`${leadId}::${campaignName}`);
+      const mirrorFields = mapLeadToCampaignMirrorFields(lead, matchedMail);
+
+      if (matchedMail) {
+        operations.push({
+          updateOne: {
+            filter: { _id: matchedMail._id },
+            update: {
+              $set: {
+                ...mirrorFields,
+                updatedBy: userId || null,
+              },
+            },
+          },
+        });
+        return;
+      }
+
+      operations.push({
+        insertOne: {
+          document: {
+            ...mirrorFields,
+            mailId: "",
+            createdBy: userId || null,
+            updatedBy: userId || null,
+          },
+        },
+      });
+      pendingInsertIndexes.push(operations.length - 1);
+    });
+
+    if (pendingInsertIndexes.length) {
+      const counter = await Counter.findOneAndUpdate(
+        { name: "mailId" },
+        { $inc: { value: pendingInsertIndexes.length } },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+
+      const startValue = counter.value - pendingInsertIndexes.length + 1;
+      pendingInsertIndexes.forEach((operationIndex, rangeIndex) => {
+        operations[operationIndex].insertOne.document.mailId = `MAIL-${String(startValue + rangeIndex).padStart(6, "0")}`;
+      });
+    }
+
+    if (operations.length) {
+      await Mail.bulkWrite(operations, { ordered: false });
+    }
+  }
+};
+
 const backfillLeadDataToMail = async () => {
   if (isBackfillInProgress) {
     return;
@@ -380,8 +664,12 @@ module.exports = {
   backfillLeadDataToMail,
   mapLeadToMailFields,
   syncLeadToMail,
+  syncLeadToCampaignMirror,
+  syncLeadCampaignMirrorDeletion,
+  syncLeadsToCampaignMirrorBulk,
   syncLeadsToMailBulk,
   syncMailToLead,
   syncLeadDeletionToMail,
   syncLeadStatusToMail,
+  getProfessionalCampaignSubject,
 };

@@ -59,7 +59,7 @@ const MAIL_REFERENCE_FILTERS = {
   templateType: ["A", "B", "C", "D", "E", "F", "COO-A", "COO-B", "COO-C", "COO-D"],
   ipAddress: ["Shruti", "Menka", "Raksha", "Ritesh"],
   webTabAndType: ["Edge", "Chrome", "Mozilla"],
-  emailVerified: ["Yes", "No", "Incorrect"],
+  emailVerified: ["Yes", "No", "Incorrect", "Invalid"],
   emailSentType: ["Yes", "No"],
   status: ["Active", "Stop", "Enquiry - Call", "Enquiry - Mail", "Enquiry - WhatsApp"],
   leadType: LEAD_TYPE,
